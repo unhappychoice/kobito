@@ -3,33 +3,31 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use super::Agent;
+use super::event::{AgentEvent, Usage};
 use crate::logger::LogSink;
 
 pub struct AgentOutcome {
+    #[allow(dead_code)]
     pub stdout: String,
     pub natural_stop: bool,
+    pub task_complete: bool,
+    pub usage: Usage,
 }
 
-pub async fn run_streamed(mut cmd: Command, name: &str, sink: &LogSink) -> Result<AgentOutcome> {
+pub async fn run_streamed(
+    mut cmd: Command,
+    agent: &dyn Agent,
+    sink: &LogSink,
+) -> Result<AgentOutcome> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let name = agent.name().to_string();
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawn {name} — is the `{name}` CLI installed and on PATH?"))?;
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-
-    let stdout_sink = sink.clone();
-    let stdout_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            stdout_sink.write("stdout", &line);
-            buf.push_str(&line);
-            buf.push('\n');
-        }
-        buf
-    });
 
     let stderr_sink = sink.clone();
     let stderr_task = tokio::spawn(async move {
@@ -39,17 +37,37 @@ pub async fn run_streamed(mut cmd: Command, name: &str, sink: &LogSink) -> Resul
         }
     });
 
+    let mut accumulated = String::new();
+    let mut usage = Usage::default();
+    let mut reader = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        let event = agent.parse_event(&line);
+        sink.event(&line, &event);
+        match &event {
+            AgentEvent::Message(text) => {
+                accumulated.push_str(text);
+                accumulated.push('\n');
+            }
+            AgentEvent::Usage(u) => {
+                usage = *u;
+            }
+            _ => {}
+        }
+    }
+
     let status = child.wait().await?;
-    let captured = stdout_task.await.unwrap_or_default();
     let _ = stderr_task.await;
 
     if !status.success() {
         bail!("{name} exited with status {status}");
     }
-    let natural_stop = captured.contains("NATURAL_STOP");
+    let natural_stop = accumulated.contains("NATURAL_STOP");
+    let task_complete = accumulated.contains("TASK_COMPLETE");
     Ok(AgentOutcome {
-        stdout: captured,
+        stdout: accumulated,
         natural_stop,
+        task_complete,
+        usage,
     })
 }
 
