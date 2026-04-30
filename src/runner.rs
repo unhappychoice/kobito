@@ -93,8 +93,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
                 ui::set_status(&bar, iteration, started.elapsed(), total_retries, "committing");
                 let diff = git::diff_staged(&repo)?;
                 let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                let msg = commit::generate_message(&repo, &diff, &args.prompt, &style, &language)
-                    .await?;
+                let msg = commit::generate_message(&repo, &diff, &args.prompt, &style).await?;
                 git::commit(&repo, &msg)?;
                 sink.note(&format!("✓ committed: {}", first_line(&msg)));
                 completed += 1;

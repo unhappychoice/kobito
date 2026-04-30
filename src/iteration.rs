@@ -106,8 +106,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     if git::has_staged_changes(&repo)? {
                         let diff = git::diff_staged(&repo)?;
                         let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                        let msg = commit::generate_message(&repo, &diff, body, &style, &language)
-                            .await?;
+                        let msg = commit::generate_message(&repo, &diff, body, &style).await?;
                         git::commit(&repo, &msg)?;
                         sink.note(&format!(
                             "✓ committed: {}",
