@@ -50,8 +50,6 @@ pub async fn run(args: IterationArgs) -> Result<()> {
         let _ = ctrlc::set_handler(move || f.store(true, Ordering::SeqCst));
     }
 
-    let (agents_md, claude_md) = prompt::read_repo_docs(&repo);
-
     for (n, (line_no, body)) in pending.iter().enumerate() {
         if cancelled.load(Ordering::SeqCst) {
             break;
@@ -94,14 +92,11 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 &format!("task {}/{}", task_idx, pending.len()),
             );
             let parts = prompt::PromptParts {
-                agents_md: agents_md.clone(),
-                claude_md: claude_md.clone(),
-                language: language.clone(),
                 goal: body.clone(),
                 iteration,
                 notes: None,
             };
-            let prompt_body = prompt::build_task_prompt(&parts, &args.agent, body);
+            let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
             match agent::invoke_claude(&repo, &prompt_body, &sink).await {

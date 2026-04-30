@@ -50,10 +50,9 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     }
 
     sink.note(&format!("kobito start: {}", args.prompt));
-    sink.note(&format!("project: {id}  branch: {branch}  language: {language}"));
+    sink.note(&format!("project: {id}  branch: {branch}"));
 
     let started = Instant::now();
-    let (agents_md, claude_md) = prompt::read_repo_docs(&repo);
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -67,14 +66,11 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
 
         let notes = fs::read_to_string(state::notes_path(&project)).ok();
         let parts = prompt::PromptParts {
-            agents_md: agents_md.clone(),
-            claude_md: claude_md.clone(),
-            language: language.clone(),
             goal: args.prompt.clone(),
             iteration,
             notes,
         };
-        let body = prompt::build_iteration_prompt(&parts, &args.agent);
+        let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&run.prompts_dir, iteration, &body)?;
 
         let outcome = match args.agent.as_str() {
