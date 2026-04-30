@@ -229,3 +229,302 @@ fn summarize_tool_input(input: Option<&serde_json::Value>) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_one(agent: &ClaudeCode, line: &str) -> Vec<AgentEvent> {
+        agent.parse_event(line)
+    }
+
+    #[test]
+    fn name_returns_claude() {
+        assert_eq!(ClaudeCode::new().name(), "claude");
+    }
+
+    #[test]
+    fn streaming_command_uses_stream_json_with_bypass() {
+        let agent = ClaudeCode::new();
+        let cmd = agent.build_streaming_command("hi");
+        let std_cmd = cmd.as_std();
+        assert_eq!(std_cmd.get_program(), "claude");
+        let args: Vec<&str> = std_cmd.get_args().filter_map(|a| a.to_str()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "hi",
+                "--permission-mode",
+                "bypassPermissions",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ]
+        );
+    }
+
+    #[test]
+    fn oneshot_command_uses_text_output() {
+        let agent = ClaudeCode::new();
+        let cmd = agent.build_oneshot_command("hello");
+        let std_cmd = cmd.as_std();
+        assert_eq!(std_cmd.get_program(), "claude");
+        let args: Vec<&str> = std_cmd.get_args().filter_map(|a| a.to_str()).collect();
+        assert_eq!(args, vec!["-p", "hello", "--output-format", "text"]);
+    }
+
+    #[test]
+    fn parse_event_returns_other_for_invalid_json() {
+        let agent = ClaudeCode::new();
+        let evs = parse_one(&agent, "not json");
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AgentEvent::Other(s) => assert_eq!(s, "not json"),
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_event_returns_empty_when_type_missing() {
+        let agent = ClaudeCode::new();
+        assert!(parse_one(&agent, r#"{"foo":1}"#).is_empty());
+    }
+
+    #[test]
+    fn parse_event_returns_empty_for_unknown_kind() {
+        let agent = ClaudeCode::new();
+        assert!(parse_one(&agent, r#"{"type":"mystery"}"#).is_empty());
+    }
+
+    #[test]
+    fn assistant_text_emits_message_event() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}"#;
+        let evs = parse_one(&agent, line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AgentEvent::Message(m) => assert_eq!(m, "hi there"),
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_blank_text_is_skipped() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"   "}]}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn assistant_tool_use_emits_tool_start_with_summary() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -al"}}]}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::ToolStart { tool, summary } => {
+                assert_eq!(tool, "Bash");
+                assert_eq!(summary.as_deref(), Some("ls -al"));
+            }
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_tool_use_without_input_has_no_summary() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read"}]}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::ToolStart { tool, summary } => {
+                assert_eq!(tool, "Read");
+                assert!(summary.is_none());
+            }
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_tool_use_missing_name_falls_back_to_unknown() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x"}]}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::ToolStart { tool, .. } => assert_eq!(tool, "unknown"),
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_skips_unknown_content_item_types() {
+        let agent = ClaudeCode::new();
+        let line =
+            r#"{"type":"assistant","message":{"content":[{"type":"image","data":"abc"}]}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn assistant_returns_empty_when_content_missing() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"assistant","message":{}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn user_tool_result_resolves_remembered_tool_name() {
+        let agent = ClaudeCode::new();
+        let start = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"abc","name":"Read","input":{"file_path":"/etc/hosts"}}]}}"#;
+        let _ = parse_one(&agent, start);
+        let end = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"abc"}]}}"#;
+        let evs = parse_one(&agent, end);
+        match &evs[0] {
+            AgentEvent::ToolEnd { tool, ok } => {
+                assert_eq!(tool, "Read");
+                assert!(*ok);
+            }
+            other => panic!("expected ToolEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_tool_result_marks_error_when_is_error_true() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"unknown","is_error":true}]}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::ToolEnd { tool, ok } => {
+                assert_eq!(tool, "tool");
+                assert!(!ok);
+            }
+            other => panic!("expected ToolEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_tool_result_id_is_consumed_on_resolve() {
+        let agent = ClaudeCode::new();
+        let start = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"once","name":"Grep"}]}}"#;
+        let _ = parse_one(&agent, start);
+        let end = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"once"}]}}"#;
+        let _ = parse_one(&agent, end);
+        let again = parse_one(&agent, end);
+        match &again[0] {
+            AgentEvent::ToolEnd { tool, .. } => assert_eq!(tool, "tool"),
+            other => panic!("expected ToolEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_returns_empty_when_content_missing() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"user","message":{}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn user_skips_non_tool_result_items() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn result_emits_usage_then_stop() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"result","subtype":"success","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":3}}"#;
+        let evs = parse_one(&agent, line);
+        assert_eq!(evs.len(), 2);
+        match &evs[0] {
+            AgentEvent::Usage(u) => {
+                assert_eq!(u.input_tokens, 10);
+                assert_eq!(u.output_tokens, 20);
+                assert_eq!(u.cached_input_tokens, 3);
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+        match &evs[1] {
+            AgentEvent::Stop { reason } => assert_eq!(reason, "success"),
+            other => panic!("expected Stop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn result_without_usage_emits_only_stop_with_default_reason() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"result"}"#;
+        let evs = parse_one(&agent, line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AgentEvent::Stop { reason } => assert_eq!(reason, "end"),
+            other => panic!("expected Stop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_message_start_emits_usage_from_message() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":7}}}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::Usage(u) => assert_eq!(u.input_tokens, 7),
+            other => panic!("expected Usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_message_delta_emits_usage_directly() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":42}}}"#;
+        let evs = parse_one(&agent, line);
+        match &evs[0] {
+            AgentEvent::Usage(u) => assert_eq!(u.output_tokens, 42),
+            other => panic!("expected Usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_unknown_subtype_returns_empty() {
+        let agent = ClaudeCode::new();
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_stop"}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn stream_event_without_inner_event_returns_empty() {
+        let agent = ClaudeCode::new();
+        assert!(parse_one(&agent, r#"{"type":"stream_event"}"#).is_empty());
+    }
+
+    #[test]
+    fn stream_event_message_start_without_usage_returns_empty() {
+        let agent = ClaudeCode::new();
+        let line =
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{}}}"#;
+        assert!(parse_one(&agent, line).is_empty());
+    }
+
+    #[test]
+    fn summarize_tool_input_picks_first_known_key_and_replaces_newlines() {
+        let v = serde_json::json!({"file_path": "a\nb"});
+        assert_eq!(summarize_tool_input(Some(&v)).as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn summarize_tool_input_truncates_to_80_chars() {
+        let long = "x".repeat(200);
+        let v = serde_json::json!({"command": long});
+        let summary = summarize_tool_input(Some(&v)).expect("should produce summary");
+        assert_eq!(summary.chars().count(), 80);
+    }
+
+    #[test]
+    fn summarize_tool_input_returns_none_for_missing_input() {
+        assert!(summarize_tool_input(None).is_none());
+    }
+
+    #[test]
+    fn summarize_tool_input_returns_none_when_no_known_key_present() {
+        let v = serde_json::json!({"unrelated": "value"});
+        assert!(summarize_tool_input(Some(&v)).is_none());
+    }
+}
