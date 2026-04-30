@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use std::fs;
 use std::sync::Arc;
@@ -6,13 +6,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::ContinuousArgs;
-use crate::{agent, commit, git, logger::LogSink, prompt, state, ui};
+use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
     }
+
+    let preset_body = match &args.preset {
+        Some(name) => {
+            let vars = preset::parse_vars(&args.vars)?;
+            Some(preset::load(name, &repo, &vars)?)
+        }
+        None => {
+            if !args.vars.is_empty() {
+                bail!("--var requires --preset");
+            }
+            None
+        }
+    };
 
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
@@ -66,7 +79,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             goal: args.prompt.clone(),
             iteration,
             notes,
-            preset: None,
+            preset: preset_body.clone(),
         };
         let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&run.prompts_dir, iteration, &body)?;
