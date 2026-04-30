@@ -12,21 +12,20 @@ stop it.
 
 Early MVP. Phase 1 + 2 implemented:
 
+All four MVP phases shipped:
+
 - `continuous` mode end-to-end with the Claude Code agent (#2)
 - `iteration` mode: per-task branch + PR from a `tasks.md` backlog (#3)
 - LLM-generated commit messages (#4)
 - State persisted under `~/.local/state/kobito/` (#6)
 - Real-time log passthrough with a status bar (#5)
 - Preset system: reusable Markdown templates with `{{var}}` substitution (#7)
+- Agent abstraction with Claude Code and OpenAI Codex backends (#9)
 
 Project conventions (style, output language) are the agent's job —
 both Claude Code and Codex auto-read their respective memory files
 (`CLAUDE.md` / `AGENTS.md`) at every invocation, so kobito does not
 inject or pin anything itself.
-
-Not yet implemented:
-
-- Codex agent backend (#9)
 
 ## Install
 
@@ -34,9 +33,11 @@ Not yet implemented:
 cargo install --path .
 ```
 
-Requires the [`claude`](https://github.com/anthropics/claude-code) CLI on
-`PATH`. Iteration mode additionally requires the [`gh`](https://cli.github.com/)
-CLI authenticated for the project's remote.
+Requires either the [`claude`](https://github.com/anthropics/claude-code)
+or [`codex`](https://github.com/openai/codex) CLI on `PATH` (see
+`--agent` below). Iteration mode additionally requires the
+[`gh`](https://cli.github.com/) CLI authenticated for the project's
+remote.
 
 ## Usage
 
@@ -119,7 +120,7 @@ kobito iteration --preset small-feature --backlog tasks.md
 | `--var key=value`   | repeatable | substitute `{{key}}` in the preset         |
 | `--max-iterations`  | `50` / `30` | hard cap on iterations (per task in iteration mode) |
 | `--max-failures`    | `3`       | give up after N consecutive failures        |
-| `--agent`           | `claude`  | backend agent (only `claude` for now)       |
+| `--agent`           | `claude`  | `claude` (alias `claude-code`) or `codex`   |
 | `--allow-dirty`     | `false`   | skip the clean-tree check                   |
 
 ## State layout
