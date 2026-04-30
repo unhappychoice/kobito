@@ -62,6 +62,44 @@ pub fn build_iteration_prompt(parts: &PromptParts, agent: &str) -> String {
     out
 }
 
+pub fn build_task_prompt(parts: &PromptParts, agent: &str, task_body: &str) -> String {
+    let mut out = String::new();
+
+    out.push_str(&format!(
+        "# Project conventions\n\nOutput all code, comments, and commit messages in {}.\n\n",
+        parts.language
+    ));
+
+    if let Some(md) = &parts.agents_md {
+        out.push_str("## AGENTS.md\n\n");
+        out.push_str(md.trim());
+        out.push_str("\n\n");
+    }
+
+    if agent != "claude" {
+        if let Some(md) = &parts.claude_md {
+            out.push_str("## CLAUDE.md\n\n");
+            out.push_str(md.trim());
+            out.push_str("\n\n");
+        }
+    }
+
+    out.push_str(&format!(
+        "## Single task\n\n{}\n\n## Iteration {}\n\n",
+        task_body.trim(),
+        parts.iteration
+    ));
+
+    out.push_str(
+        "Make focused progress toward completing only this single task. \
+         When the task is fully complete and no more work remains for it, \
+         output the literal token TASK_COMPLETE on its own line and stop. \
+         Do not start unrelated work even if you notice other issues — they belong to other tasks.\n",
+    );
+
+    out
+}
+
 pub fn save_prompt(prompts_dir: &Path, iteration: u32, body: &str) -> Result<()> {
     let path = prompts_dir.join(format!("iter-{iteration:04}.md"));
     fs::write(path, body)?;
