@@ -15,7 +15,7 @@ impl Agent for ClaudeCode {
             "-p",
             prompt,
             "--permission-mode",
-            "acceptEdits",
+            "auto",
             "--output-format",
             "text",
         ]);
