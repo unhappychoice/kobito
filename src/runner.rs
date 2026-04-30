@@ -184,6 +184,10 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
             args.sink.note("interrupted by user");
             break;
         }
+        args.sink.note(&format!(
+            "═══ iteration {iteration} / {} ═══",
+            args.max_iterations
+        ));
         ui::set_status(
             args.bar,
             iteration,
@@ -202,7 +206,15 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
         let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&args.run.prompts_dir, iteration, &body)?;
 
-        match agent::run(args.agent, args.repo, &body, args.sink).await {
+        match agent::run(
+            args.agent,
+            args.repo,
+            &body,
+            args.sink,
+            args.cancelled.clone(),
+        )
+        .await
+        {
             Ok(out) => {
                 consecutive_failures = 0;
                 if out.natural_stop {
