@@ -450,6 +450,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "console",
  "ctrlc",
  "dialoguer",
  "dirs",

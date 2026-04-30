@@ -1,3 +1,4 @@
+use console::Term;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Write;
 use std::time::Duration;
@@ -28,22 +29,26 @@ impl Drop for CursorGuard {
 pub fn make_status_bar() -> ProgressBar {
     let bar = ProgressBar::new_spinner();
     // Two-line template:
-    //   1. a thin separator rule, dimmed
-    //   2. the actual status row, painted on the kobito-channel BG
-    //      to end-of-line via \x1b[K so the bar reads as a sticky
-    //      footer rather than a floating spinner.
+    //   1. a separator rule painted across the full terminal width on
+    //      the kobito-channel BG so the rule itself is part of the
+    //      footer block, not a free-floating line of dashes.
+    //   2. the status row, also on the kobito BG. {wide_msg} fills
+    //      whatever horizontal space is left so the BG continues to
+    //      end-of-line regardless of terminal width.
     //
     // {elapsed_precise} is owned by indicatif so the seconds tick on
     // every steady_tick (every 120 ms below) without us re-calling
     // set_message.
-    let rule = "\x1b[38;2;90;95;105m\
-        ──────────────────────────────────────────────────────────────────\
-        \x1b[0m";
+    let width = Term::stdout()
+        .size_checked()
+        .map(|(_, w)| w as usize)
+        .unwrap_or(80);
+    let rule = "─".repeat(width);
     let template = format!(
-        "{rule}\n\
+        "\x1b[48;2;25;30;42m\x1b[38;2;90;95;105m{rule}\x1b[0m\n\
          \x1b[48;2;25;30;42m\x1b[38;2;180;200;225m \
-         {{spinner}}  iter {{prefix}}  ·  {{elapsed_precise}}  ·  {{msg}} \
-         \x1b[K\x1b[0m",
+         {{spinner}}  iter {{prefix}}  ·  {{elapsed_precise}}  ·  {{wide_msg}}\
+         \x1b[0m"
     );
     bar.set_style(
         ProgressStyle::with_template(&template)
