@@ -68,8 +68,28 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Continuous(args) => runner::run_continuous(args).await,
         Command::Ls => crate::state::list_projects(),
-        Command::Log { .. } | Command::Resume { .. } | Command::Tasks { .. } => {
-            bail!("not yet implemented — tracked in #3 / #6")
+        Command::Tasks {
+            action: TasksAction::Edit,
+        } => edit_tasks(),
+        Command::Log { .. } | Command::Resume { .. } => {
+            bail!("not yet implemented — tracked in #6")
         }
     }
+}
+
+fn edit_tasks() -> Result<()> {
+    let repo = crate::git::repo_root()?;
+    let remote = crate::git::remote_url(&repo);
+    let id = crate::state::project_id(&repo, remote.as_deref());
+    let project = crate::state::project_paths(id)?;
+    let path = crate::state::seed_tasks_if_needed(&project, &repo)?;
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".into());
+    let status = std::process::Command::new(editor).arg(&path).status()?;
+    if !status.success() {
+        bail!("editor exited with {status}");
+    }
+    println!("{}", path.display());
+    Ok(())
 }
