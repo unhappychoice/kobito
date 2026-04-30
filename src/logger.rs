@@ -159,8 +159,12 @@ fn section_for(line: &str) -> (u8, Option<u8>, bool) {
     // same neutral slate with progressively dimmer foregrounds, so
     // the eye treats them as one quiet stream and the three accent
     // colours pop out as section boundaries.
-    if line.starts_with("kobito start") || line.starts_with("kobito resume") {
-        // run begins — deepest blue
+    if line.starts_with("kobito start")
+        || line.starts_with("kobito resume")
+        || line.starts_with("project:")
+    {
+        // run begins — deepest blue (start banner + the project /
+        // branch / run-id metadata line that follows it)
         (17, Some(159), true)
     } else if line.starts_with("═══")
         || line.starts_with("──")
