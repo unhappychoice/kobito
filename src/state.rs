@@ -104,18 +104,30 @@ pub fn read_run_meta(project: &ProjectPaths, run_id: &str) -> Result<(RunMeta, R
     Ok((meta, run))
 }
 
-pub fn latest_run_id(project: &ProjectPaths) -> Result<Option<String>> {
+#[derive(Debug, Clone)]
+pub struct RunSummary {
+    pub id: String,
+    pub meta: RunMeta,
+}
+
+pub fn recent_runs(project: &ProjectPaths, limit: usize) -> Result<Vec<RunSummary>> {
     let runs = project.root.join("runs");
     if !runs.exists() {
-        return Ok(None);
+        return Ok(vec![]);
     }
-    let mut ids: Vec<String> = fs::read_dir(&runs)?
+    let mut summaries: Vec<RunSummary> = fs::read_dir(&runs)?
         .flatten()
         .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().to_string();
+            let body = fs::read_to_string(e.path().join("meta.json")).ok()?;
+            let meta: RunMeta = serde_json::from_str(&body).ok()?;
+            Some(RunSummary { id, meta })
+        })
         .collect();
-    ids.sort();
-    Ok(ids.into_iter().last())
+    summaries.sort_by(|a, b| b.id.cmp(&a.id));
+    summaries.truncate(limit);
+    Ok(summaries)
 }
 
 pub fn notes_path(run: &RunPaths) -> PathBuf {

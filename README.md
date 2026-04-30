@@ -154,12 +154,17 @@ outputs are skipped.
 ### Resuming
 
 ```sh
-# resume the most recent run on the current project
+# interactive picker — shows the 10 most recent runs
 kobito resume
 
 # or resume a specific run id (the timestamp dir name)
 kobito resume --run 2026-05-01T12-00-00
 ```
+
+`kobito resume` without `--run` opens an arrow-key picker listing the most
+recent runs (id, branch, first line of the goal). When there is only one
+prior run, or when stdin is not a TTY (CI, pipes), it auto-picks the
+latest.
 
 Resume re-uses the original branch and agent from the run's
 `meta.json`, opens a new run directory, and copies the previous

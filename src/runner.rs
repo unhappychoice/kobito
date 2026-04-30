@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 use indicatif::ProgressBar;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,8 +101,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
 
     let target_id = match args.run.as_ref() {
         Some(s) => s.clone(),
-        None => state::latest_run_id(&project)?
-            .ok_or_else(|| anyhow!("no previous runs to resume in {}", project.root.display()))?,
+        None => pick_run_to_resume(&project)?,
     };
     let (prev_meta, prev_run) = state::read_run_meta(&project, &target_id)?;
     let agent_impl = agent::from_name(&prev_meta.agent)?;
@@ -267,6 +267,32 @@ fn install_cancel_handler() -> Arc<AtomicBool> {
     let flag = cancelled.clone();
     let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
     cancelled
+}
+
+fn pick_run_to_resume(project: &state::ProjectPaths) -> Result<String> {
+    let recent = state::recent_runs(project, 10)?;
+    if recent.is_empty() {
+        return Err(anyhow!(
+            "no previous runs to resume in {}",
+            project.root.display()
+        ));
+    }
+    if recent.len() == 1 || !std::io::stdin().is_terminal() {
+        return Ok(recent.into_iter().next().unwrap().id);
+    }
+    let labels: Vec<String> = recent
+        .iter()
+        .map(|r| {
+            let goal = first_line(&r.meta.goal).chars().take(60).collect::<String>();
+            format!("{}  [{}]  {goal}", r.id, r.meta.branch)
+        })
+        .collect();
+    let selection = dialoguer::Select::new()
+        .with_prompt("Resume which run?")
+        .items(&labels)
+        .default(0)
+        .interact()?;
+    Ok(recent[selection].id.clone())
 }
 
 fn slugify(s: &str) -> String {

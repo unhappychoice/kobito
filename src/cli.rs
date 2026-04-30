@@ -25,7 +25,7 @@ pub enum Command {
     Ls,
     /// Replay the last run's log for a project.
     Log { project: Option<String> },
-    /// Resume a previous continuous run (latest by default, or --run <id>).
+    /// Resume a previous continuous run (interactive picker, or --run <id>).
     Resume(ResumeArgs),
     /// Manage the iteration backlog.
     Tasks {
@@ -42,7 +42,9 @@ pub enum TasksAction {
 
 #[derive(Parser, Debug)]
 pub struct ResumeArgs {
-    /// Run id to resume (timestamp directory name). Defaults to the latest.
+    /// Run id to resume (timestamp directory name). If omitted, an
+    /// interactive picker shows the 10 most recent runs (auto-picks the
+    /// only one when there's just one, or in non-interactive shells).
     #[arg(long)]
     pub run: Option<String>,
 
