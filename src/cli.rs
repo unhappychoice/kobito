@@ -47,6 +47,15 @@ pub struct IterationArgs {
     #[arg(long)]
     pub backlog: Option<PathBuf>,
 
+    /// Compose a preset above each task prompt. Looks up
+    /// .kobito/presets/<name>.md (project) then $XDG_CONFIG_HOME/kobito/presets/<name>.md.
+    #[arg(long)]
+    pub preset: Option<String>,
+
+    /// Variable for the preset, repeatable: --var path=src --var target=80.
+    #[arg(long = "var")]
+    pub vars: Vec<String>,
+
     /// Maximum iterations per task before giving up.
     #[arg(long, default_value_t = 30)]
     pub max_iterations: u32,
@@ -69,6 +78,15 @@ pub struct ContinuousArgs {
     /// The goal to pursue, e.g. "Increase test coverage in src/".
     #[arg(short, long)]
     pub prompt: String,
+
+    /// Compose a preset above the prompt. Looks up
+    /// .kobito/presets/<name>.md (project) then $XDG_CONFIG_HOME/kobito/presets/<name>.md.
+    #[arg(long)]
+    pub preset: Option<String>,
+
+    /// Variable for the preset, repeatable: --var path=src --var target=80.
+    #[arg(long = "var")]
+    pub vars: Vec<String>,
 
     /// Maximum number of iterations before exiting.
     #[arg(long, default_value_t = 50)]
