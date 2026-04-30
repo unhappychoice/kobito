@@ -4,6 +4,7 @@ use clap::Parser;
 mod cli;
 mod config;
 mod git;
+mod prompt;
 mod state;
 
 #[tokio::main]
