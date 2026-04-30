@@ -10,6 +10,7 @@ mod logger;
 mod prompt;
 mod runner;
 mod state;
+mod tasks;
 mod ui;
 
 #[tokio::main]
