@@ -300,7 +300,8 @@ mod tests {
     #[test]
     fn assistant_text_emits_message_event() {
         let agent = ClaudeCode::new();
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}"#;
+        let line =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}"#;
         let evs = parse_one(&agent, line);
         assert_eq!(evs.len(), 1);
         match &evs[0] {
@@ -358,8 +359,7 @@ mod tests {
     #[test]
     fn assistant_skips_unknown_content_item_types() {
         let agent = ClaudeCode::new();
-        let line =
-            r#"{"type":"assistant","message":{"content":[{"type":"image","data":"abc"}]}}"#;
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"image","data":"abc"}]}}"#;
         assert!(parse_one(&agent, line).is_empty());
     }
 
@@ -375,7 +375,8 @@ mod tests {
         let agent = ClaudeCode::new();
         let start = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"abc","name":"Read","input":{"file_path":"/etc/hosts"}}]}}"#;
         let _ = parse_one(&agent, start);
-        let end = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"abc"}]}}"#;
+        let end =
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"abc"}]}}"#;
         let evs = parse_one(&agent, end);
         match &evs[0] {
             AgentEvent::ToolEnd { tool, ok } => {
@@ -498,8 +499,7 @@ mod tests {
     #[test]
     fn stream_event_message_start_without_usage_returns_empty() {
         let agent = ClaudeCode::new();
-        let line =
-            r#"{"type":"stream_event","event":{"type":"message_start","message":{}}}"#;
+        let line = r#"{"type":"stream_event","event":{"type":"message_start","message":{}}}"#;
         assert!(parse_one(&agent, line).is_empty());
     }
 

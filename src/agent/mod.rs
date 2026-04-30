@@ -46,3 +46,47 @@ pub async fn run_oneshot(agent: &dyn Agent, repo: &Path, prompt: &str) -> Result
     cmd.current_dir(repo);
     stream::run_oneshot(cmd, agent.name()).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_name_returns_claude_code_for_claude_alias() {
+        let agent = from_name("claude").expect("claude alias should resolve");
+        assert_eq!(agent.name(), "claude");
+    }
+
+    #[test]
+    fn from_name_returns_claude_code_for_full_name() {
+        let agent = from_name("claude-code").expect("claude-code should resolve");
+        assert_eq!(agent.name(), "claude");
+    }
+
+    #[test]
+    fn from_name_returns_codex() {
+        let agent = from_name("codex").expect("codex should resolve");
+        assert_eq!(agent.name(), "codex");
+    }
+
+    #[test]
+    fn from_name_errors_for_unknown_agent() {
+        let err = from_name("ghost")
+            .err()
+            .expect("unknown agent should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ghost"),
+            "error should mention the bad name: {msg}"
+        );
+        assert!(
+            msg.contains("claude") && msg.contains("codex"),
+            "error should list supported agents: {msg}",
+        );
+    }
+
+    #[test]
+    fn from_name_errors_for_empty_name() {
+        assert!(from_name("").is_err());
+    }
+}
