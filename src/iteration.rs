@@ -92,6 +92,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 goal: body.clone(),
                 iteration,
                 notes: None,
+                preset: None,
             };
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;

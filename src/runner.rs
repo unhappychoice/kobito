@@ -66,6 +66,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             goal: args.prompt.clone(),
             iteration,
             notes,
+            preset: None,
         };
         let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&run.prompts_dir, iteration, &body)?;
