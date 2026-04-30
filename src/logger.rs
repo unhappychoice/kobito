@@ -75,7 +75,7 @@ impl LogSink {
             let _ = writeln!(f, "{json}");
         }
         if let Some(formatted) = format_event(event) {
-            self.print(&formatted);
+            self.write("agent", &formatted);
         }
     }
 
