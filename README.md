@@ -42,7 +42,7 @@ Pursue a single open-ended goal on one working branch:
 
 ```sh
 # from inside a clean git repo
-kobito continuous --prompt "Increase test coverage in src/"
+kobito cont --prompt "Increase test coverage in src/"
 ```
 
 ### iteration
@@ -57,13 +57,13 @@ cat > .kobito/tasks.md <<'EOF'
 - [ ] Document the new endpoints in README
 EOF
 
-kobito iteration
+kobito iter
 ```
 
 Or point at an explicit backlog file:
 
 ```sh
-kobito iteration --backlog ./tasks.md
+kobito iter --backlog ./tasks.md
 ```
 
 The first run copies `.kobito/tasks.md` (or the file passed via `--backlog`)
@@ -94,7 +94,7 @@ Resolution checks (1) first, then (2). Missing preset → error.
 # Increase test coverage for {{path}}. Aim for {{target}}% line coverage.
 
 # preset replaces --prompt entirely:
-kobito continuous --preset coverage --var path=src/api --var target=80
+kobito cont --preset coverage --var path=src/api --var target=80
 ```
 
 In `continuous` mode `--preset` is **mutually exclusive with `--prompt`** — the resolved preset body becomes the goal.
@@ -102,7 +102,7 @@ In `continuous` mode `--preset` is **mutually exclusive with `--prompt`** — th
 In `iteration` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
 
 ```sh
-kobito iteration --preset small-feature --backlog tasks.md
+kobito iter --preset small-feature --backlog tasks.md
 ```
 
 ### Common options
