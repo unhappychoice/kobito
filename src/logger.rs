@@ -151,32 +151,40 @@ fn colorize(judge: &str, full: &str) -> String {
 }
 
 fn section_for(line: &str) -> (u8, Option<u8>, bool) {
-    // Each section uses one ANSI hue. BGs are the dark shade of that
-    // hue, FGs are the bright shade — same lightness relationship
-    // across all six so the palette reads as one set.
+    // Three accents on a neutral dark base:
+    //   blue  — kobito's own voice (start / iteration / task)
+    //   green — commit landed
+    //   red   — error / cancellation
+    // Everything else (agent body, tool calls, summary) sits on the
+    // same neutral slate with progressively dimmer foregrounds, so
+    // the eye treats them as one quiet stream and the three accent
+    // colours pop out as section boundaries.
     if line.starts_with("kobito start") || line.starts_with("kobito resume") {
-        // start — blue
-        (17, Some(75), true)
-    } else if line.starts_with("═══") || line.starts_with("──") {
-        // iteration boundary — cyan
-        (23, Some(87), true)
-    } else if line.starts_with("=== task") {
-        // iteration-mode task header — yellow
-        (58, Some(186), true)
+        // run begins — deepest blue
+        (17, Some(159), true)
+    } else if line.starts_with("═══")
+        || line.starts_with("──")
+        || line.starts_with("=== task")
+    {
+        // iteration / task boundary — softer blue
+        (24, Some(117), true)
     } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        // commit landed — green
+        // commit / PR landed — green
         (22, Some(120), true)
+    } else if line.starts_with("✗") || line.starts_with("interrupting") {
+        // error / cancellation — red
+        (52, Some(210), true)
     } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
     {
-        // summary — magenta
-        (53, Some(183), true)
-    } else if line.starts_with("✗") || line.starts_with("interrupting") {
-        // error / cancellation — red
-        (52, Some(210), true)
+        // summary line — neutral, mid-grey FG
+        (234, Some(244), false)
+    } else if line.starts_with("▶") {
+        // tool call — neutral, dimmest FG
+        (234, Some(240), false)
     } else {
-        // body — neutral dark slate, default fg
+        // body — neutral, default FG
         (234, None, false)
     }
 }
