@@ -129,7 +129,7 @@ kobito iteration --preset small-feature --backlog tasks.md
 ~/.local/state/kobito/
 └── projects/
     └── <repo-basename>-<sha1[:8]>/
-        ├── notes.md            # cross-iteration scratch memory (read-only to kobito today)
+        ├── notes.md            # cross-iteration learnings, auto-maintained by the agent
         ├── current-run.json    # active run metadata
         └── runs/
             └── 2026-05-01T12-00-00/
@@ -137,6 +137,15 @@ kobito iteration --preset small-feature --backlog tasks.md
                 └── prompts/
                     └── iter-0001.md
 ```
+
+After every commit, the agent is asked in a one-shot call to write
+1-5 short bullets distilling what is useful for the next iteration —
+surprising findings, dead-ends, paths or commands worth remembering —
+and the result is appended to `notes.md` under a timestamped header.
+At the start of every iteration, `notes.md` is read back into the
+prompt as cross-iteration memory, so retries and follow-ups see
+what the previous iterations learned. Empty / `NO_NOTES` outputs are
+skipped so quiet iterations don't dilute the file.
 
 `$XDG_STATE_HOME` is honoured if set.
 
