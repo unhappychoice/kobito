@@ -104,6 +104,10 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             if cancelled.load(Ordering::SeqCst) {
                 break;
             }
+            sink.note(&format!(
+                "── iteration {iteration} / {} ──",
+                args.max_iterations
+            ));
             ui::set_status(
                 &bar,
                 iteration,
@@ -121,7 +125,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
-            match agent::run(&*agent_impl, &repo, &prompt_body, &sink).await {
+            match agent::run(&*agent_impl, &repo, &prompt_body, &sink, cancelled.clone()).await {
                 Ok(out) => {
                     consecutive_failures = 0;
                     git::stage_all(&repo)?;

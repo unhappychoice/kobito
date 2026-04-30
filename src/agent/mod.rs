@@ -1,5 +1,7 @@
 use anyhow::{Result, bail};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::logger::LogSink;
 
@@ -32,10 +34,11 @@ pub async fn run(
     repo: &Path,
     prompt: &str,
     sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<AgentOutcome> {
     let mut cmd = agent.build_streaming_command(prompt);
     cmd.current_dir(repo);
-    stream::run_streamed(cmd, agent, sink).await
+    stream::run_streamed(cmd, agent, sink, cancelled).await
 }
 
 pub async fn run_oneshot(agent: &dyn Agent, repo: &Path, prompt: &str) -> Result<String> {

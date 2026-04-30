@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -19,8 +22,11 @@ pub async fn run_streamed(
     mut cmd: Command,
     agent: &dyn Agent,
     sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<AgentOutcome> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let name = agent.name().to_string();
     let mut child = cmd
         .spawn()
@@ -40,18 +46,37 @@ pub async fn run_streamed(
     let mut accumulated = String::new();
     let mut usage = Usage::default();
     let mut reader = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
-        for event in agent.parse_event(&line) {
-            sink.event(&line, &event);
-            match &event {
-                AgentEvent::Message(text) => {
-                    accumulated.push_str(text);
-                    accumulated.push('\n');
+    let mut interrupted = false;
+    loop {
+        if cancelled.load(Ordering::SeqCst) && !interrupted {
+            interrupted = true;
+            sink.note(&format!("interrupting {name} (Ctrl-C)"));
+            let _ = child.kill().await;
+        }
+        tokio::select! {
+            line = reader.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        for event in agent.parse_event(&line) {
+                            sink.event(&line, &event);
+                            match &event {
+                                AgentEvent::Message(text) => {
+                                    accumulated.push_str(text);
+                                    accumulated.push('\n');
+                                }
+                                AgentEvent::Usage(u) => {
+                                    usage = *u;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
                 }
-                AgentEvent::Usage(u) => {
-                    usage = *u;
-                }
-                _ => {}
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                // periodic poll so we notice cancellation even if the agent goes silent
             }
         }
     }
@@ -59,6 +84,9 @@ pub async fn run_streamed(
     let status = child.wait().await?;
     let _ = stderr_task.await;
 
+    if interrupted {
+        bail!("{name} cancelled");
+    }
     if !status.success() {
         bail!("{name} exited with status {status}");
     }
