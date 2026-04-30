@@ -151,29 +151,32 @@ fn colorize(judge: &str, full: &str) -> String {
 }
 
 fn section_for(line: &str) -> (u8, Option<u8>, bool) {
+    // Each section uses one ANSI hue. BGs are the dark shade of that
+    // hue, FGs are the bright shade — same lightness relationship
+    // across all six so the palette reads as one set.
     if line.starts_with("kobito start") || line.starts_with("kobito resume") {
-        // Kobito Start — deep violet
-        (53, Some(213), true)
+        // start — blue
+        (17, Some(75), true)
     } else if line.starts_with("═══") || line.starts_with("──") {
-        // Iteration boundary — twilight teal
-        (23, Some(159), true)
+        // iteration boundary — cyan
+        (23, Some(87), true)
     } else if line.starts_with("=== task") {
-        // Iteration-mode task header — burnished copper
-        (94, Some(223), true)
+        // iteration-mode task header — yellow
+        (58, Some(186), true)
     } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        // Commit landed — moss
+        // commit landed — green
         (22, Some(120), true)
     } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
     {
-        // Summary — gold-on-aubergine
-        (54, Some(222), false)
+        // summary — magenta
+        (53, Some(183), true)
     } else if line.starts_with("✗") || line.starts_with("interrupting") {
-        // Error / cancellation — blood
-        (52, Some(217), true)
+        // error / cancellation — red
+        (52, Some(210), true)
     } else {
-        // Body — dark slate, default fg
+        // body — neutral dark slate, default fg
         (234, None, false)
     }
 }
