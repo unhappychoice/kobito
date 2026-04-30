@@ -64,8 +64,8 @@ pub struct ContinuousArgs {
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Ls => crate::state::list_projects(),
         Command::Continuous(_)
-        | Command::Ls
         | Command::Log { .. }
         | Command::Resume { .. }
         | Command::Tasks { .. } => bail!("not yet implemented"),
