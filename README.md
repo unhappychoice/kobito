@@ -8,22 +8,19 @@ or [Codex](https://github.com/openai/codex) on your repository,
 committing each iteration with an LLM-generated message that follows
 the project's own conventions, until you stop it.
 
-## Status
+## Features
 
-MVP shipped:
-
-- `continuous` mode (one branch, many commits)
-- `iteration` mode (per-task branch + PR from a `tasks.md` backlog)
+- `continuous` mode — one branch, many commits, run until you stop it
+- `iteration` mode — per-task branch + PR from a `tasks.md` backlog
 - Claude Code and OpenAI Codex backends behind a single `Agent` trait
 - Preset system with `{{var}}` substitution (project + global)
 - Per-run `notes.md` auto-maintained by the agent
 - `kobito resume` with an interactive picker of recent runs
 - State under `$XDG_STATE_HOME/kobito/`, real-time log passthrough + status bar
 
-Project conventions (output language, code style, commit format, branch
-names) are deferred to the agent's own memory files (`CLAUDE.md` /
-`AGENTS.md`). kobito does not inject or pin anything itself — see this
-repo's [`AGENTS.md`](AGENTS.md) as an example of what those files describe.
+Project conventions — output language, code style, commit format, branch
+names — are deferred to the agent's own memory files (`CLAUDE.md` /
+`AGENTS.md`). kobito does not inject or pin anything itself.
 
 ## Install
 
@@ -185,14 +182,7 @@ Single branch, single PR, many commits — by design (continuous mode). One bran
 
 ## Contributing
 
-Conventions for working on kobito itself — commit format, branch naming,
-source layout, build / test commands — live in [`AGENTS.md`](AGENTS.md).
-[`CLAUDE.md`](CLAUDE.md) is a one-line `@AGENTS.md` alias so Claude Code
-picks it up too.
-
-When you drive kobito from another repository, your **own** `AGENTS.md`
-/ `CLAUDE.md` is what shapes the agent's output; the file in this repo
-only governs work on kobito itself.
+See [`AGENTS.md`](AGENTS.md).
 
 ## License
 
