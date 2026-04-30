@@ -1,12 +1,13 @@
 use anyhow::Result;
 use regex::Regex;
 
-use crate::agent;
+use crate::agent::{self, Agent};
 use std::path::Path;
 
 const MAX_DIFF_CHARS: usize = 12_000;
 
 pub async fn generate_message(
+    agent: &dyn Agent,
     repo: &Path,
     diff: &str,
     iteration_goal: &str,
@@ -41,7 +42,7 @@ pub async fn generate_message(
     );
 
     for attempt in 0..2 {
-        let raw = agent::invoke_claude_oneshot(repo, &prompt).await?;
+        let raw = agent::run_oneshot(agent, repo, &prompt).await?;
         let cleaned = clean(&raw);
         if is_conventional(&cleaned) {
             return Ok(cleaned);

@@ -9,6 +9,7 @@ use crate::cli::IterationArgs;
 use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, tasks::Backlog, ui};
 
 pub async fn run(args: IterationArgs) -> Result<()> {
+    let agent_impl = agent::from_name(&args.agent)?;
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
@@ -110,14 +111,16 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
-            match agent::invoke_claude(&repo, &prompt_body, &sink).await {
+            match agent::run(&*agent_impl, &repo, &prompt_body, &sink).await {
                 Ok(out) => {
                     consecutive_failures = 0;
                     git::stage_all(&repo)?;
                     if git::has_staged_changes(&repo)? {
                         let diff = git::diff_staged(&repo)?;
                         let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                        let msg = commit::generate_message(&repo, &diff, body, &style).await?;
+                        let msg =
+                            commit::generate_message(&*agent_impl, &repo, &diff, body, &style)
+                                .await?;
                         git::commit(&repo, &msg)?;
                         sink.note(&format!(
                             "✓ committed: {}",

@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -7,30 +6,19 @@ use tokio::process::Command;
 use crate::logger::LogSink;
 
 pub struct AgentOutcome {
-    #[allow(dead_code)]
     pub stdout: String,
     pub natural_stop: bool,
 }
 
-pub async fn invoke_claude(
-    repo: &Path,
-    prompt: &str,
+pub async fn run_streamed(
+    mut cmd: Command,
+    name: &str,
     sink: &LogSink,
 ) -> Result<AgentOutcome> {
-    let mut child = Command::new("claude")
-        .current_dir(repo)
-        .args([
-            "-p",
-            prompt,
-            "--permission-mode",
-            "acceptEdits",
-            "--output-format",
-            "text",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
         .spawn()
-        .context("spawn claude — is the `claude` CLI installed and on PATH?")?;
+        .with_context(|| format!("spawn {name} — is the `{name}` CLI installed and on PATH?"))?;
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -60,22 +48,23 @@ pub async fn invoke_claude(
     let _ = stderr_task.await;
 
     if !status.success() {
-        bail!("claude exited with status {status}");
+        bail!("{name} exited with status {status}");
     }
     let natural_stop = captured.contains("NATURAL_STOP");
-    Ok(AgentOutcome { stdout: captured, natural_stop })
+    Ok(AgentOutcome {
+        stdout: captured,
+        natural_stop,
+    })
 }
 
-pub async fn invoke_claude_oneshot(repo: &Path, prompt: &str) -> Result<String> {
-    let out = Command::new("claude")
-        .current_dir(repo)
-        .args(["-p", prompt, "--output-format", "text"])
+pub async fn run_oneshot(mut cmd: Command, name: &str) -> Result<String> {
+    let out = cmd
         .output()
         .await
-        .context("spawn claude")?;
+        .with_context(|| format!("spawn {name}"))?;
     if !out.status.success() {
         bail!(
-            "claude exited with {}: {}",
+            "{name} exited with {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
         );
