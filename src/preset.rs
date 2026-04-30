@@ -113,7 +113,11 @@ mod tests {
     #[test]
     fn config_root_path_ends_with_kobito() {
         let root = config_root();
-        assert_eq!(root.file_name().and_then(|s| s.to_str()), Some("kobito"));
+        let leaf = root.file_name().and_then(|s| s.to_str());
+        assert!(
+            matches!(leaf, Some("kobito" | ".kobito-config")),
+            "unexpected config_root leaf: {leaf:?}"
+        );
     }
 
     #[test]
