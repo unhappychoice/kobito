@@ -48,7 +48,8 @@ pub fn make_status_bar() -> ProgressBar {
         "\x1b[48;2;25;30;42m\x1b[38;2;90;95;105m{rule}\x1b[0m\n\
          \x1b[48;2;25;30;42m\x1b[38;2;180;200;225m \
          {{spinner}}  iter {{prefix}}  ·  {{elapsed_precise}}  ·  {{wide_msg}}\
-         \x1b[0m"
+         \x1b[0m\n\
+         \x1b[48;2;25;30;42m\x1b[38;2;90;95;105m{rule}\x1b[0m"
     );
     bar.set_style(
         ProgressStyle::with_template(&template)
