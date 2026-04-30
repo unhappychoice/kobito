@@ -122,19 +122,27 @@ mod tests {
     use std::path::PathBuf;
     use std::process;
 
-    fn unique_tmp(prefix: &str) -> PathBuf {
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_tmp(prefix: &str) -> TempDir {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let pid = process::id();
         let mut path = std::env::temp_dir();
         path.push(format!("kobito-stream-{prefix}-{pid}-{nanos}"));
         std::fs::create_dir_all(&path).unwrap();
-        path
+        TempDir(path)
     }
 
-    fn open_sink(prefix: &str) -> LogSink {
+    fn open_sink(prefix: &str) -> (LogSink, TempDir) {
         let dir = unique_tmp(prefix);
-        let log = dir.join("log.ndjson");
-        LogSink::open(&log, None).unwrap()
+        let log = dir.0.join("log.ndjson");
+        let sink = LogSink::open(&log, None).unwrap();
+        (sink, dir)
     }
 
     struct FakeAgent;
@@ -180,7 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_streamed_collects_messages_from_stdout() {
-        let sink = open_sink("ok");
+        let (sink, _dir) = open_sink("ok");
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("printf 'hello\\nworld\\n'");
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -195,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_streamed_detects_natural_stop_and_task_complete() {
-        let sink = open_sink("stop");
+        let (sink, _dir) = open_sink("stop");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg("printf 'NATURAL_STOP\\nTASK_COMPLETE\\n'");
@@ -209,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_streamed_errors_on_nonzero_exit() {
-        let sink = open_sink("fail");
+        let (sink, _dir) = open_sink("fail");
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("echo bye; exit 3");
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -224,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_streamed_bails_with_cancelled_when_flag_is_set() {
-        let sink = open_sink("cancel");
+        let (sink, _dir) = open_sink("cancel");
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("sleep 5");
         let cancelled = Arc::new(AtomicBool::new(true));
@@ -237,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_streamed_errors_when_binary_missing() {
-        let sink = open_sink("missing");
+        let (sink, _dir) = open_sink("missing");
         let cmd = Command::new("kobito-no-such-binary-xyz");
         let cancelled = Arc::new(AtomicBool::new(false));
         let err = run_streamed(cmd, &FakeAgent, &sink, cancelled)

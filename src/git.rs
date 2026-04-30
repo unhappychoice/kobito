@@ -123,6 +123,19 @@ mod tests {
     use super::*;
     use std::fs;
 
+    struct TempRepo(PathBuf);
+    impl std::ops::Deref for TempRepo {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn unique_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "kobito-git-{label}-{}-{}",
@@ -133,13 +146,13 @@ mod tests {
         dir
     }
 
-    fn init_repo(label: &str) -> PathBuf {
+    fn init_repo(label: &str) -> TempRepo {
         let dir = unique_dir(label);
         run(&dir, &["init", "-q", "-b", "main"]).unwrap();
         run(&dir, &["config", "user.email", "test@example.com"]).unwrap();
         run(&dir, &["config", "user.name", "Test"]).unwrap();
         run(&dir, &["config", "commit.gpgsign", "false"]).unwrap();
-        dir
+        TempRepo(dir)
     }
 
     fn write_file(repo: &Path, name: &str, content: &str) {
@@ -155,7 +168,6 @@ mod tests {
         let repo = init_repo("clean");
         empty_commit(&repo, "init");
         ensure_clean(&repo).unwrap();
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -165,7 +177,6 @@ mod tests {
         write_file(&repo, "untracked.txt", "x");
         let err = ensure_clean(&repo).unwrap_err().to_string();
         assert!(err.contains("dirty"), "expected dirty error, got: {err}");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -173,7 +184,6 @@ mod tests {
         let repo = init_repo("curbranch");
         empty_commit(&repo, "init");
         assert_eq!(current_branch(&repo).unwrap(), "main");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -184,7 +194,6 @@ mod tests {
         assert_eq!(current_branch(&repo).unwrap(), "feature/x");
         checkout(&repo, "main").unwrap();
         assert_eq!(current_branch(&repo).unwrap(), "main");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -196,7 +205,6 @@ mod tests {
         assert!(!has_staged_changes(&repo).unwrap());
         stage_all(&repo).unwrap();
         assert!(has_staged_changes(&repo).unwrap());
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -210,7 +218,6 @@ mod tests {
             diff.contains("+hello"),
             "expected diff to include +hello, got: {diff}"
         );
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -222,7 +229,6 @@ mod tests {
         commit(&repo, "feat: add a").unwrap();
         let msgs = recent_commit_messages(&repo, 5).unwrap();
         assert_eq!(msgs[0], "feat: add a");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -231,7 +237,6 @@ mod tests {
         empty_commit(&repo, "init");
         let err = commit(&repo, "noop").unwrap_err().to_string();
         assert!(err.contains("git commit failed"), "got: {err}");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -242,7 +247,6 @@ mod tests {
         empty_commit(&repo, "third");
         let msgs = recent_commit_messages(&repo, 2).unwrap();
         assert_eq!(msgs, vec!["third".to_string(), "second".to_string()]);
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -254,14 +258,12 @@ mod tests {
         write_file(&repo, "a.txt", "v2\n");
         reset_hard(&repo).unwrap();
         assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "v1\n");
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
     fn remote_url_is_none_when_no_remote_configured() {
         let repo = init_repo("noremote");
         assert!(remote_url(&repo).is_none());
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -276,7 +278,6 @@ mod tests {
             remote_url(&repo),
             Some("https://example.com/x.git".to_string())
         );
-        fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -286,6 +287,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("git checkout"), "got: {err}");
-        fs::remove_dir_all(&repo).ok();
     }
 }
