@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::ContinuousArgs;
-use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, ui};
+use crate::{agent, branch, commit, git, logger::LogSink, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let agent_impl = agent::from_name(&args.agent)?;
@@ -32,9 +32,12 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let project = state::project_paths(id.clone())?;
     let run = state::new_run(project.clone())?;
 
-    let slug = slugify(&goal);
+    let suggested = branch::suggest(&*agent_impl, &repo, &goal)
+        .await
+        .unwrap_or_else(|_| format!("kobito/{}", slugify(&goal)));
     let branch = format!(
-        "kobito/{slug}-{ts}",
+        "{}-{ts}",
+        suggested,
         ts = Utc::now().format("%Y%m%d-%H%M%S")
     );
     git::create_and_checkout(&repo, &branch)?;
