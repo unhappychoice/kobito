@@ -179,3 +179,207 @@ pub fn list_projects() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-state-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn project_with_root(root: PathBuf, id: &str) -> ProjectPaths {
+        fs::create_dir_all(root.join("runs")).unwrap();
+        ProjectPaths {
+            id: id.to_string(),
+            root,
+        }
+    }
+
+    fn sample_meta(run_id: &str) -> RunMeta {
+        RunMeta {
+            run_id: run_id.to_string(),
+            started_at: "2026-05-01T00:00:00Z".to_string(),
+            branch: "feature/x".to_string(),
+            goal: "do thing".to_string(),
+            agent: "claude_code".to_string(),
+        }
+    }
+
+    #[test]
+    fn project_id_starts_with_basename_and_8_hex_suffix() {
+        let id = project_id(
+            Path::new("/tmp/myproj"),
+            Some("https://example.com/myproj.git"),
+        );
+        let (basename, suffix) = id.rsplit_once('-').unwrap();
+        assert_eq!(basename, "myproj");
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn project_id_is_stable_for_same_remote_url() {
+        let a = project_id(Path::new("/x/proj"), Some("git@github.com:o/r.git"));
+        let b = project_id(Path::new("/elsewhere/proj"), Some("git@github.com:o/r.git"));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn project_id_falls_back_to_path_when_no_remote() {
+        let a = project_id(Path::new("/some/where/proj"), None);
+        let b = project_id(Path::new("/other/proj"), None);
+        assert!(a.starts_with("proj-"));
+        assert!(b.starts_with("proj-"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn project_id_uses_default_basename_when_path_has_none() {
+        let id = project_id(Path::new("/"), Some("remote"));
+        assert!(id.starts_with("project-"));
+    }
+
+    #[test]
+    fn new_run_creates_run_dir_prompts_and_empty_log() {
+        let dir = unique_dir("new-run");
+        let project = project_with_root(dir.clone(), "p-1");
+        let run = new_run(project).unwrap();
+        assert!(run.run_dir.exists());
+        assert!(run.prompts_dir.exists());
+        assert!(run.log_file.exists());
+        assert_eq!(fs::read_to_string(&run.log_file).unwrap(), "");
+        assert!(!run.timestamp.is_empty());
+        assert_eq!(run.run_dir.file_name().unwrap(), run.timestamp.as_str());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_run_meta_round_trips_written_meta() {
+        let dir = unique_dir("meta-rt");
+        let project = project_with_root(dir.clone(), "p-2");
+        let run = new_run(project.clone()).unwrap();
+        write_run_meta(&run, &sample_meta(&run.timestamp)).unwrap();
+        let (loaded, paths) = read_run_meta(&project, &run.timestamp).unwrap();
+        assert_eq!(loaded.branch, "feature/x");
+        assert_eq!(loaded.goal, "do thing");
+        assert_eq!(loaded.agent, "claude_code");
+        assert_eq!(paths.run_dir, run.run_dir);
+        assert_eq!(paths.timestamp, run.timestamp);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_run_meta_errors_when_run_missing() {
+        let dir = unique_dir("meta-missing");
+        let project = project_with_root(dir.clone(), "p-3");
+        let err = read_run_meta(&project, "no-such-run").unwrap_err();
+        assert!(format!("{err:#}").contains("not found"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recent_runs_returns_empty_when_runs_dir_missing() {
+        let dir = unique_dir("recent-empty");
+        let project = ProjectPaths {
+            id: "p".to_string(),
+            root: dir.clone(),
+        };
+        assert!(recent_runs(&project, 5).unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recent_runs_sorts_desc_and_truncates_to_limit() {
+        let dir = unique_dir("recent-sort");
+        let project = project_with_root(dir.clone(), "p-4");
+        for id in ["2026-01-01T00-00-00", "2026-03-01T00-00-00", "2026-02-01T00-00-00"] {
+            let rd = project.root.join("runs").join(id);
+            fs::create_dir_all(&rd).unwrap();
+            fs::write(
+                rd.join("meta.json"),
+                serde_json::to_string(&sample_meta(id)).unwrap(),
+            )
+            .unwrap();
+        }
+        let summaries = recent_runs(&project, 2).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].id, "2026-03-01T00-00-00");
+        assert_eq!(summaries[1].id, "2026-02-01T00-00-00");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recent_runs_skips_dirs_without_meta_json() {
+        let dir = unique_dir("recent-skip");
+        let project = project_with_root(dir.clone(), "p-5");
+        fs::create_dir_all(project.root.join("runs").join("orphan")).unwrap();
+        assert!(recent_runs(&project, 5).unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notes_path_and_tasks_path_match_layout() {
+        let dir = unique_dir("paths");
+        let project = ProjectPaths {
+            id: "p".to_string(),
+            root: dir.clone(),
+        };
+        let run = RunPaths {
+            project: project.clone(),
+            run_dir: dir.join("runs/r1"),
+            log_file: dir.join("runs/r1/log.ndjson"),
+            prompts_dir: dir.join("runs/r1/prompts"),
+            timestamp: "r1".to_string(),
+        };
+        assert_eq!(notes_path(&run), dir.join("runs/r1/notes.md"));
+        assert_eq!(tasks_path(&project), dir.join("tasks.md"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn seed_tasks_copies_from_repo_kobito_dir() {
+        let dir = unique_dir("seed-copy");
+        let project = project_with_root(dir.clone(), "p-6");
+        let repo = unique_dir("seed-copy-repo");
+        fs::create_dir_all(repo.join(".kobito")).unwrap();
+        fs::write(repo.join(".kobito/tasks.md"), "- [ ] do x\n").unwrap();
+        let dest = seed_tasks_if_needed(&project, &repo).unwrap();
+        assert_eq!(dest, project.root.join("tasks.md"));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "- [ ] do x\n");
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn seed_tasks_creates_empty_file_when_repo_has_none() {
+        let dir = unique_dir("seed-empty");
+        let project = project_with_root(dir.clone(), "p-7");
+        let repo = unique_dir("seed-empty-repo");
+        let dest = seed_tasks_if_needed(&project, &repo).unwrap();
+        assert!(dest.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "");
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn seed_tasks_is_idempotent_when_dest_already_present() {
+        let dir = unique_dir("seed-idem");
+        let project = project_with_root(dir.clone(), "p-8");
+        fs::write(project.root.join("tasks.md"), "existing\n").unwrap();
+        let repo = unique_dir("seed-idem-repo");
+        fs::create_dir_all(repo.join(".kobito")).unwrap();
+        fs::write(repo.join(".kobito/tasks.md"), "should NOT overwrite\n").unwrap();
+        let dest = seed_tasks_if_needed(&project, &repo).unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing\n");
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&repo).ok();
+    }
+}
