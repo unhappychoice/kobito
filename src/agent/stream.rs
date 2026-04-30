@@ -10,11 +10,7 @@ pub struct AgentOutcome {
     pub natural_stop: bool,
 }
 
-pub async fn run_streamed(
-    mut cmd: Command,
-    name: &str,
-    sink: &LogSink,
-) -> Result<AgentOutcome> {
+pub async fn run_streamed(mut cmd: Command, name: &str, sink: &LogSink) -> Result<AgentOutcome> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd
         .spawn()

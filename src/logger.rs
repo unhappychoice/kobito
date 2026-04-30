@@ -39,10 +39,10 @@ impl LogSink {
             source,
             line,
         };
-        if let Ok(json) = serde_json::to_string(&entry) {
-            if let Ok(mut f) = self.inner.lock() {
-                let _ = writeln!(f, "{json}");
-            }
+        if let Ok(json) = serde_json::to_string(&entry)
+            && let Ok(mut f) = self.inner.lock()
+        {
+            let _ = writeln!(f, "{json}");
         }
         if let Some(bar) = &self.bar {
             bar.println(format!("│ {line}"));

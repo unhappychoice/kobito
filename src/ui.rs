@@ -12,13 +12,7 @@ pub fn make_status_bar() -> ProgressBar {
     bar
 }
 
-pub fn set_status(
-    bar: &ProgressBar,
-    iteration: u32,
-    elapsed: Duration,
-    retries: u32,
-    state: &str,
-) {
+pub fn set_status(bar: &ProgressBar, iteration: u32, elapsed: Duration, retries: u32, state: &str) {
     let secs = elapsed.as_secs();
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
