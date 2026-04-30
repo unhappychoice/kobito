@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::cli::IterationArgs;
 use crate::{
-    agent, branch, commit, git, logger::LogSink, preset, prompt, state, tasks::Backlog, ui,
+    agent, branch, commit, git, logger::LogSink, notes, preset, prompt, state, tasks::Backlog, ui,
 };
 
 pub async fn run(args: IterationArgs) -> Result<()> {
@@ -133,6 +133,20 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                             "✓ committed: {}",
                             msg.lines().next().unwrap_or("")
                         ));
+
+                        let notes_path = state::notes_path(&project);
+                        if let Err(e) = notes::append_learning(
+                            &*agent_impl,
+                            &repo,
+                            &notes_path,
+                            iteration,
+                            body,
+                            &diff,
+                        )
+                        .await
+                        {
+                            sink.note(&format!("notes update failed: {e}"));
+                        }
                     } else {
                         sink.note("no diff this iteration");
                     }

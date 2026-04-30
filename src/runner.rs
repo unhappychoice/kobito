@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::ContinuousArgs;
-use crate::{agent, branch, commit, git, logger::LogSink, preset, prompt, state, ui};
+use crate::{agent, branch, commit, git, logger::LogSink, notes, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let agent_impl = agent::from_name(&args.agent)?;
@@ -109,6 +109,20 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
                 git::commit(&repo, &msg)?;
                 sink.note(&format!("✓ committed: {}", first_line(&msg)));
                 completed += 1;
+
+                let notes_path = state::notes_path(&project);
+                if let Err(e) = notes::append_learning(
+                    &*agent_impl,
+                    &repo,
+                    &notes_path,
+                    iteration,
+                    &goal,
+                    &diff,
+                )
+                .await
+                {
+                    sink.note(&format!("notes update failed: {e}"));
+                }
             }
             Err(e) => {
                 consecutive_failures += 1;
