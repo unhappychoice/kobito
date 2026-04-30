@@ -27,8 +27,8 @@ impl Agent for Codex {
         cmd
     }
 
-    fn parse_event(&self, line: &str) -> AgentEvent {
-        parse(line).unwrap_or_else(|| AgentEvent::Other(line.to_string()))
+    fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
+        parse(line).map(|e| vec![e]).unwrap_or_default()
     }
 }
 

@@ -3,7 +3,6 @@ use std::path::Path;
 use std::process::Command as StdCommand;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use crate::cli::IterationArgs;
 use crate::{
@@ -55,6 +54,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
     }
 
     let starting_branch = git::current_branch(&repo)?;
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
 
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -96,7 +96,6 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             body
         ));
 
-        let started = Instant::now();
         let mut consecutive_failures = 0u32;
         let mut completed = false;
 
@@ -104,10 +103,12 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             if cancelled.load(Ordering::SeqCst) {
                 break;
             }
-            ui::set_status(
-                &bar,
+            sink.note(&format!(
+                "── iteration {iteration} / {} ──",
+                args.max_iterations
+            ));
+            sink.set_iteration_status(
                 iteration,
-                started.elapsed(),
                 consecutive_failures,
                 &format!("task {}/{}", task_idx, pending.len()),
             );
@@ -121,7 +122,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
-            match agent::run(&*agent_impl, &repo, &prompt_body, &sink).await {
+            match agent::run(&*agent_impl, &repo, &prompt_body, &sink, cancelled.clone()).await {
                 Ok(out) => {
                     consecutive_failures = 0;
                     git::stage_all(&repo)?;
@@ -166,6 +167,12 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     }
                 }
                 Err(e) => {
+                    if cancelled.load(Ordering::SeqCst) {
+                        // User cancellation — bail out of the
+                        // per-task loop without resetting the worktree
+                        // or counting it as a failure.
+                        break;
+                    }
                     consecutive_failures += 1;
                     sink.note(&format!("✗ failed: {e}"));
                     git::reset_hard(&repo).ok();

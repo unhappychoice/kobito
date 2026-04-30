@@ -1,12 +1,10 @@
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
-use indicatif::ProgressBar;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use crate::agent::Agent;
 use crate::cli::{ContinuousArgs, ResumeArgs};
@@ -57,6 +55,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         },
     )?;
 
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&run.log_file, Some(bar.clone()))?;
     let cancelled = install_cancel_handler();
@@ -76,7 +75,6 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        bar: &bar,
         cancelled,
     })
     .await?;
@@ -124,6 +122,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         },
     )?;
 
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&new_run.log_file, Some(bar.clone()))?;
     let cancelled = install_cancel_handler();
@@ -146,7 +145,6 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        bar: &bar,
         cancelled,
     })
     .await?;
@@ -169,12 +167,10 @@ struct LoopArgs<'a> {
     max_iterations: u32,
     max_failures: u32,
     sink: &'a LogSink,
-    bar: &'a ProgressBar,
     cancelled: Arc<AtomicBool>,
 }
 
 async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
-    let started = Instant::now();
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -184,13 +180,12 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
             args.sink.note("interrupted by user");
             break;
         }
-        ui::set_status(
-            args.bar,
-            iteration,
-            started.elapsed(),
-            total_retries,
-            "thinking",
-        );
+        args.sink.note(&format!(
+            "═══ iteration {iteration} / {} ═══",
+            args.max_iterations
+        ));
+        args.sink
+            .set_iteration_status(iteration, total_retries, "thinking");
 
         let notes = fs::read_to_string(state::notes_path(args.run)).ok();
         let parts = prompt::PromptParts {
@@ -202,7 +197,15 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
         let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&args.run.prompts_dir, iteration, &body)?;
 
-        match agent::run(args.agent, args.repo, &body, args.sink).await {
+        match agent::run(
+            args.agent,
+            args.repo,
+            &body,
+            args.sink,
+            args.cancelled.clone(),
+        )
+        .await
+        {
             Ok(out) => {
                 consecutive_failures = 0;
                 if out.natural_stop {
@@ -216,13 +219,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                         .note("iteration produced no diff — skipping commit");
                     continue;
                 }
-                ui::set_status(
-                    args.bar,
-                    iteration,
-                    started.elapsed(),
-                    total_retries,
-                    "committing",
-                );
+                args.sink
+                    .set_iteration_status(iteration, total_retries, "committing");
                 let diff = git::diff_staged(args.repo)?;
                 let style = git::recent_commit_messages(args.repo, 20).unwrap_or_default();
                 let msg = commit::generate_message(args.agent, args.repo, &diff, args.goal, &style)
@@ -249,6 +247,12 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 }
             }
             Err(e) => {
+                if args.cancelled.load(Ordering::SeqCst) {
+                    // User cancellation — leave the working tree
+                    // alone and exit the loop, don't count it as a
+                    // failure or burn a retry / backoff.
+                    break;
+                }
                 consecutive_failures += 1;
                 total_retries += 1;
                 args.sink.note(&format!("✗ iteration failed: {e}"));

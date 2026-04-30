@@ -1,5 +1,7 @@
 use anyhow::{Result, bail};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::logger::LogSink;
 
@@ -15,12 +17,13 @@ pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
     fn build_streaming_command(&self, prompt: &str) -> tokio::process::Command;
     fn build_oneshot_command(&self, prompt: &str) -> tokio::process::Command;
-    fn parse_event(&self, line: &str) -> AgentEvent;
+    /// One stdout line may produce zero, one, or several events.
+    fn parse_event(&self, line: &str) -> Vec<AgentEvent>;
 }
 
 pub fn from_name(name: &str) -> Result<Box<dyn Agent>> {
     match name {
-        "claude" | "claude-code" => Ok(Box::new(claude_code::ClaudeCode)),
+        "claude" | "claude-code" => Ok(Box::new(claude_code::ClaudeCode::new())),
         "codex" => Ok(Box::new(codex::Codex)),
         other => bail!("unknown agent `{other}` — supported: claude, claude-code, codex"),
     }
@@ -31,10 +34,11 @@ pub async fn run(
     repo: &Path,
     prompt: &str,
     sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<AgentOutcome> {
     let mut cmd = agent.build_streaming_command(prompt);
     cmd.current_dir(repo);
-    stream::run_streamed(cmd, agent, sink).await
+    stream::run_streamed(cmd, agent, sink, cancelled).await
 }
 
 pub async fn run_oneshot(agent: &dyn Agent, repo: &Path, prompt: &str) -> Result<String> {
