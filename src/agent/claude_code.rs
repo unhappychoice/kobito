@@ -1,7 +1,7 @@
 use tokio::process::Command;
 
 use super::Agent;
-use super::event::AgentEvent;
+use super::event::{AgentEvent, Usage};
 
 pub struct ClaudeCode;
 
@@ -19,7 +19,6 @@ impl Agent for ClaudeCode {
             "bypassPermissions",
             "--output-format",
             "stream-json",
-            "--include-partial-messages",
             "--verbose",
         ]);
         cmd
@@ -40,62 +39,90 @@ fn parse(line: &str) -> Option<AgentEvent> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let kind = v.get("type")?.as_str()?;
     match kind {
+        "stream_event" => parse_stream_event(v.get("event")?),
+        "user" => parse_user_message(v.get("message")?),
+        "assistant" => parse_assistant_message(v.get("message")?),
+        "result" => Some(AgentEvent::Stop {
+            reason: v
+                .get("subtype")
+                .and_then(|s| s.as_str())
+                .unwrap_or("end")
+                .to_string(),
+        }),
+        _ => None,
+    }
+}
+
+fn parse_stream_event(event: &serde_json::Value) -> Option<AgentEvent> {
+    let kind = event.get("type")?.as_str()?;
+    match kind {
         "message_start" => {
-            let usage = v.get("message")?.get("usage")?;
-            Some(AgentEvent::Usage(super::event::Usage {
-                input_tokens: usage
-                    .get("input_tokens")
-                    .and_then(|n| n.as_u64())
-                    .unwrap_or(0),
-                output_tokens: usage
-                    .get("output_tokens")
-                    .and_then(|n| n.as_u64())
-                    .unwrap_or(0),
-                cached_input_tokens: usage
-                    .get("cache_read_input_tokens")
-                    .and_then(|n| n.as_u64())
-                    .unwrap_or(0),
-            }))
+            let usage = event.get("message")?.get("usage")?;
+            Some(AgentEvent::Usage(usage_from(usage)))
         }
         "content_block_start" => {
-            let block = v.get("content_block")?;
+            let block = event.get("content_block")?;
             let block_type = block.get("type")?.as_str()?;
-            if block_type == "tool_use" || block_type == "server_tool_use" {
-                let tool = block
-                    .get("name")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                Some(AgentEvent::ToolStart {
-                    tool,
-                    summary: None,
-                })
-            } else {
-                None
+            match block_type {
+                "tool_use" | "server_tool_use" => {
+                    let tool = block
+                        .get("name")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    Some(AgentEvent::ToolStart {
+                        tool,
+                        summary: None,
+                    })
+                }
+                _ => None,
             }
         }
-        "content_block_delta" => {
-            let delta = v.get("delta")?;
-            let delta_type = delta.get("type")?.as_str()?;
-            if delta_type == "text_delta" {
-                let text = delta.get("text")?.as_str()?.to_string();
-                Some(AgentEvent::Message(text))
-            } else {
-                None
-            }
-        }
-        "message_delta" => {
-            let usage = v.get("usage")?;
-            let output_tokens = usage.get("output_tokens").and_then(|n| n.as_u64())?;
-            Some(AgentEvent::Usage(super::event::Usage {
-                input_tokens: 0,
-                output_tokens,
-                cached_input_tokens: 0,
-            }))
-        }
+        "content_block_delta" => None,
+        "message_delta" => event.get("usage").map(|u| AgentEvent::Usage(usage_from(u))),
         "message_stop" => Some(AgentEvent::Stop {
             reason: "end".to_string(),
         }),
         _ => None,
+    }
+}
+
+fn parse_user_message(message: &serde_json::Value) -> Option<AgentEvent> {
+    let content = message.get("content")?.as_array()?;
+    for item in content {
+        if item.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+            let is_error = item
+                .get("is_error")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            return Some(AgentEvent::ToolEnd {
+                tool: "tool".to_string(),
+                ok: !is_error,
+            });
+        }
+    }
+    None
+}
+
+fn parse_assistant_message(message: &serde_json::Value) -> Option<AgentEvent> {
+    let content = message.get("content")?.as_array()?;
+    for item in content {
+        if item.get("type").and_then(|t| t.as_str()) == Some("text")
+            && let Some(text) = item.get("text").and_then(|s| s.as_str())
+        {
+            return Some(AgentEvent::Message(text.to_string()));
+        }
+    }
+    None
+}
+
+fn usage_from(v: &serde_json::Value) -> Usage {
+    Usage {
+        input_tokens: v.get("input_tokens").and_then(|n| n.as_u64()).unwrap_or(0),
+        output_tokens: v.get("output_tokens").and_then(|n| n.as_u64()).unwrap_or(0),
+        cached_input_tokens: v
+            .get("cache_read_input_tokens")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0),
     }
 }
