@@ -17,7 +17,11 @@ Early MVP. Phase 1 + 2 implemented:
 - LLM-generated commit messages (#4)
 - State persisted under `~/.local/state/kobito/` (#6)
 - Real-time log passthrough with a status bar (#5)
-- `AGENTS.md` injection and explicit language pinning (#8)
+
+Project conventions (style, output language) are the agent's job —
+both Claude Code and Codex auto-read their respective memory files
+(`CLAUDE.md` / `AGENTS.md`) at every invocation, so kobito does not
+inject or pin anything itself.
 
 Not yet implemented:
 
@@ -86,15 +90,8 @@ runs `gh pr create`, and marks the line `[x]` in the state copy.
 | `--backlog`         | optional (iteration)  | path to a tasks.md backlog      |
 | `--max-iterations`  | `50` / `30` | hard cap on iterations (per task in iteration mode) |
 | `--max-failures`    | `3`       | give up after N consecutive failures        |
-| `--language`        | `en`      | output language (also reads `kobito.toml`)  |
 | `--agent`           | `claude`  | backend agent (only `claude` for now)       |
 | `--allow-dirty`     | `false`   | skip the clean-tree check                   |
-
-`kobito.toml` example:
-
-```toml
-language = "en"
-```
 
 ## State layout
 
@@ -117,13 +114,13 @@ language = "en"
 
 Each iteration:
 
-1. Build a prompt: `language directive` + `AGENTS.md` (+ `CLAUDE.md` for non-Claude agents) + cross-iteration notes + the goal.
-2. Invoke the agent in non-interactive mode, streaming stdout/stderr to the terminal and to `log.ndjson`.
+1. Build a prompt: cross-iteration notes (if any) + the goal + a `NATURAL_STOP` / `TASK_COMPLETE` escape hatch.
+2. Invoke the agent in non-interactive mode, streaming stdout/stderr to the terminal and to `log.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
 3. If the agent emitted a diff, generate a Conventional Commits message via a one-shot agent call and commit.
 4. If the agent failed, `git reset --hard` and retry with exponential backoff.
-5. If the agent emits the literal token `NATURAL_STOP`, exit cleanly.
+5. If the agent emits the literal sentinel token (`NATURAL_STOP` for continuous, `TASK_COMPLETE` for iteration), exit cleanly.
 
-Single branch, single PR, many commits — by design.
+Single branch, single PR, many commits — by design (continuous mode). One branch + PR per task (iteration mode).
 
 ## License
 
