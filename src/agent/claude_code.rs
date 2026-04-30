@@ -15,7 +15,7 @@ impl Agent for ClaudeCode {
             "-p",
             prompt,
             "--permission-mode",
-            "auto",
+            "bypassPermissions",
             "--output-format",
             "text",
         ]);
