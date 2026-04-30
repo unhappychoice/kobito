@@ -2,30 +2,28 @@
 
 > Like the elves in the shoemaker's tale, it works while you sleep.
 
-`kobito` is an autonomous coding agent orchestrator. You give it a goal, and it
-loops — invoking [Claude Code](https://github.com/anthropics/claude-code) on
-your repository, committing each iteration with an LLM-generated
-[Conventional Commits](https://www.conventionalcommits.org/) message, until you
-stop it.
+`kobito` is an autonomous coding agent orchestrator. Give it a goal, it
+loops — invoking [Claude Code](https://github.com/anthropics/claude-code)
+or [Codex](https://github.com/openai/codex) on your repository,
+committing each iteration with an LLM-generated message that follows
+the project's own conventions, until you stop it.
 
 ## Status
 
-Early MVP. Phase 1 + 2 implemented:
+MVP shipped:
 
-All four MVP phases shipped:
+- `continuous` mode (one branch, many commits)
+- `iteration` mode (per-task branch + PR from a `tasks.md` backlog)
+- Claude Code and OpenAI Codex backends behind a single `Agent` trait
+- Preset system with `{{var}}` substitution (project + global)
+- Per-run `notes.md` auto-maintained by the agent
+- `kobito resume` with an interactive picker of recent runs
+- State under `$XDG_STATE_HOME/kobito/`, real-time log passthrough + status bar
 
-- `continuous` mode end-to-end with the Claude Code agent (#2)
-- `iteration` mode: per-task branch + PR from a `tasks.md` backlog (#3)
-- LLM-generated commit messages (#4)
-- State persisted under `~/.local/state/kobito/` (#6)
-- Real-time log passthrough with a status bar (#5)
-- Preset system: reusable Markdown templates with `{{var}}` substitution (#7)
-- Agent abstraction with Claude Code and OpenAI Codex backends (#9)
-
-Project conventions (style, output language) are the agent's job —
-both Claude Code and Codex auto-read their respective memory files
-(`CLAUDE.md` / `AGENTS.md`) at every invocation, so kobito does not
-inject or pin anything itself.
+Project conventions (output language, code style, commit format, branch
+names) are deferred to the agent's own memory files (`CLAUDE.md` /
+`AGENTS.md`). kobito does not inject or pin anything itself — see this
+repo's [`AGENTS.md`](AGENTS.md) as an example of what those files describe.
 
 ## Install
 
@@ -184,6 +182,17 @@ Each iteration:
 5. If the agent emits the literal sentinel token (`NATURAL_STOP` for continuous, `TASK_COMPLETE` for iteration), exit cleanly.
 
 Single branch, single PR, many commits — by design (continuous mode). One branch + PR per task (iteration mode).
+
+## Contributing
+
+Conventions for working on kobito itself — commit format, branch naming,
+source layout, build / test commands — live in [`AGENTS.md`](AGENTS.md).
+[`CLAUDE.md`](CLAUDE.md) is a one-line `@AGENTS.md` alias so Claude Code
+picks it up too.
+
+When you drive kobito from another repository, your **own** `AGENTS.md`
+/ `CLAUDE.md` is what shapes the agent's output; the file in this repo
+only governs work on kobito itself.
 
 ## License
 
