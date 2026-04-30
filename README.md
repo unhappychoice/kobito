@@ -17,6 +17,7 @@ Early MVP. Phase 1 + 2 implemented:
 - LLM-generated commit messages (#4)
 - State persisted under `~/.local/state/kobito/` (#6)
 - Real-time log passthrough with a status bar (#5)
+- Preset system: reusable Markdown templates with `{{var}}` substitution (#7)
 
 Project conventions (style, output language) are the agent's job —
 both Claude Code and Codex auto-read their respective memory files
@@ -25,7 +26,6 @@ inject or pin anything itself.
 
 Not yet implemented:
 
-- Preset system (#7)
 - Codex agent backend (#9)
 
 ## Install
@@ -82,12 +82,41 @@ For each unchecked item, kobito branches off the starting branch as
 `kobito/task-<n>-<slug>`, iterates until the agent emits `TASK_COMPLETE`,
 runs `gh pr create`, and marks the line `[x]` in the state copy.
 
+### presets
+
+Reuse a Markdown template across runs and projects. Place the file at:
+
+1. `./.kobito/presets/<name>.md` — project-local override
+2. `$XDG_CONFIG_HOME/kobito/presets/<name>.md` — global (defaults to `~/.config/kobito/presets/`)
+
+Resolution checks (1) first, then (2). Missing preset → error.
+
+`{{var}}` placeholders are substituted from `--var key=value` (repeatable). Unresolved variables abort the run before any branch is created.
+
+```sh
+# ~/.config/kobito/presets/coverage.md
+# Increase test coverage for {{path}}. Aim for {{target}}% line coverage.
+
+# preset replaces --prompt entirely:
+kobito continuous --preset coverage --var path=src/api --var target=80
+```
+
+In `continuous` mode `--preset` is **mutually exclusive with `--prompt`** — the resolved preset body becomes the goal.
+
+In `iteration` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
+
+```sh
+kobito iteration --preset small-feature --backlog tasks.md
+```
+
 ### Common options
 
 | flag                | default   | meaning                                     |
 | ------------------- | --------- | ------------------------------------------- |
 | `--prompt`, `-p`    | required (continuous) | the goal to pursue              |
 | `--backlog`         | optional (iteration)  | path to a tasks.md backlog      |
+| `--preset`          | optional  | preset name (resolved per the order above)  |
+| `--var key=value`   | repeatable | substitute `{{key}}` in the preset         |
 | `--max-iterations`  | `50` / `30` | hard cap on iterations (per task in iteration mode) |
 | `--max-failures`    | `3`       | give up after N consecutive failures        |
 | `--agent`           | `claude`  | backend agent (only `claude` for now)       |

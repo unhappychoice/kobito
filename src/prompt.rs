@@ -6,10 +6,16 @@ pub struct PromptParts {
     pub goal: String,
     pub iteration: u32,
     pub notes: Option<String>,
+    pub preset: Option<String>,
 }
 
 pub fn build_iteration_prompt(parts: &PromptParts) -> String {
     let mut out = String::new();
+
+    if let Some(preset) = &parts.preset {
+        out.push_str(preset.trim());
+        out.push_str("\n\n");
+    }
 
     if let Some(notes) = &parts.notes {
         if !notes.trim().is_empty() {
@@ -35,6 +41,11 @@ pub fn build_iteration_prompt(parts: &PromptParts) -> String {
 
 pub fn build_task_prompt(parts: &PromptParts, task_body: &str) -> String {
     let mut out = String::new();
+
+    if let Some(preset) = &parts.preset {
+        out.push_str(preset.trim());
+        out.push_str("\n\n");
+    }
 
     out.push_str(&format!(
         "## Single task\n\n{}\n\n## Iteration {}\n\n",

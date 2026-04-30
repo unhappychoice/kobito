@@ -6,13 +6,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::IterationArgs;
-use crate::{agent, commit, git, logger::LogSink, prompt, state, tasks::Backlog, ui};
+use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, tasks::Backlog, ui};
 
 pub async fn run(args: IterationArgs) -> Result<()> {
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
     }
+
+    let preset_body = match &args.preset {
+        Some(name) => {
+            let vars = preset::parse_vars(&args.vars)?;
+            Some(preset::load(name, &repo, &vars)?)
+        }
+        None => {
+            if !args.vars.is_empty() {
+                bail!("--var requires --preset");
+            }
+            None
+        }
+    };
 
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
@@ -92,6 +105,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 goal: body.clone(),
                 iteration,
                 notes: None,
+                preset: preset_body.clone(),
             };
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;

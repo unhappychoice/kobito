@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use std::fs;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::ContinuousArgs;
-use crate::{agent, commit, git, logger::LogSink, prompt, state, ui};
+use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let repo = git::repo_root()?;
@@ -14,12 +14,24 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         git::ensure_clean(&repo)?;
     }
 
+    let goal = match (args.prompt.as_ref(), args.preset.as_ref()) {
+        (Some(p), None) => p.clone(),
+        (None, Some(name)) => {
+            let vars = preset::parse_vars(&args.vars)?;
+            preset::load(name, &repo, &vars)?
+        }
+        _ => bail!("either --prompt or --preset is required (not both)"),
+    };
+    if args.preset.is_none() && !args.vars.is_empty() {
+        bail!("--var requires --preset");
+    }
+
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
     let project = state::project_paths(id.clone())?;
     let run = state::new_run(project.clone())?;
 
-    let slug = slugify(&args.prompt);
+    let slug = slugify(&goal);
     let branch = format!(
         "kobito/{slug}-{ts}",
         ts = Utc::now().format("%Y%m%d-%H%M%S")
@@ -32,7 +44,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             run_id: run.timestamp.clone(),
             started_at: Utc::now().to_rfc3339(),
             branch: branch.clone(),
-            goal: args.prompt.clone(),
+            goal: goal.clone(),
             agent: args.agent.clone(),
         },
     )?;
@@ -46,7 +58,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
     }
 
-    sink.note(&format!("kobito start: {}", args.prompt));
+    sink.note(&format!("kobito start: {}", first_line(&goal)));
     sink.note(&format!("project: {id}  branch: {branch}"));
 
     let started = Instant::now();
@@ -63,9 +75,10 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
 
         let notes = fs::read_to_string(state::notes_path(&project)).ok();
         let parts = prompt::PromptParts {
-            goal: args.prompt.clone(),
+            goal: goal.clone(),
             iteration,
             notes,
+            preset: None,
         };
         let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&run.prompts_dir, iteration, &body)?;
@@ -90,7 +103,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
                 ui::set_status(&bar, iteration, started.elapsed(), total_retries, "committing");
                 let diff = git::diff_staged(&repo)?;
                 let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                let msg = commit::generate_message(&repo, &diff, &args.prompt, &style).await?;
+                let msg = commit::generate_message(&repo, &diff, &goal, &style).await?;
                 git::commit(&repo, &msg)?;
                 sink.note(&format!("✓ committed: {}", first_line(&msg)));
                 completed += 1;
