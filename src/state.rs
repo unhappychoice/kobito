@@ -93,8 +93,8 @@ pub fn clear_current_run(project: &ProjectPaths) -> Result<()> {
     Ok(())
 }
 
-pub fn notes_path(project: &ProjectPaths) -> PathBuf {
-    project.root.join("notes.md")
+pub fn notes_path(run: &RunPaths) -> PathBuf {
+    run.run_dir.join("notes.md")
 }
 
 pub fn tasks_path(project: &ProjectPaths) -> PathBuf {

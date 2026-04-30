@@ -77,7 +77,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         }
         ui::set_status(&bar, iteration, started.elapsed(), total_retries, "thinking");
 
-        let notes = fs::read_to_string(state::notes_path(&project)).ok();
+        let notes = fs::read_to_string(state::notes_path(&run)).ok();
         let parts = prompt::PromptParts {
             goal: goal.clone(),
             iteration,
@@ -110,7 +110,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
                 sink.note(&format!("✓ committed: {}", first_line(&msg)));
                 completed += 1;
 
-                let notes_path = state::notes_path(&project);
+                let notes_path = state::notes_path(&run);
                 if let Err(e) = notes::append_learning(
                     &*agent_impl,
                     &repo,

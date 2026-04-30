@@ -134,7 +134,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                             msg.lines().next().unwrap_or("")
                         ));
 
-                        let notes_path = state::notes_path(&project);
+                        let notes_path = state::notes_path(&run_dirs);
                         if let Err(e) = notes::append_learning(
                             &*agent_impl,
                             &repo,
