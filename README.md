@@ -10,9 +10,10 @@ stop it.
 
 ## Status
 
-Early MVP. Phase 1 implemented:
+Early MVP. Phase 1 + 2 implemented:
 
 - `continuous` mode end-to-end with the Claude Code agent (#2)
+- `iteration` mode: per-task branch + PR from a `tasks.md` backlog (#3)
 - LLM-generated commit messages (#4)
 - State persisted under `~/.local/state/kobito/` (#6)
 - Real-time log passthrough with a status bar (#5)
@@ -20,7 +21,6 @@ Early MVP. Phase 1 implemented:
 
 Not yet implemented:
 
-- `iteration` mode + `tasks.md` (#3)
 - Preset system (#7)
 - Codex agent backend (#9)
 
@@ -31,21 +31,60 @@ cargo install --path .
 ```
 
 Requires the [`claude`](https://github.com/anthropics/claude-code) CLI on
-`PATH`.
+`PATH`. Iteration mode additionally requires the [`gh`](https://cli.github.com/)
+CLI authenticated for the project's remote.
 
 ## Usage
+
+### continuous
+
+Pursue a single open-ended goal on one working branch:
 
 ```sh
 # from inside a clean git repo
 kobito continuous --prompt "Increase test coverage in src/"
 ```
 
-Options:
+### iteration
+
+Consume a backlog of small tasks, one branch + PR per task:
+
+```sh
+# seed the backlog (committed to the project)
+cat > .kobito/tasks.md <<'EOF'
+- [ ] Add /healthz endpoint
+- [ ] Wire Prometheus metrics middleware
+- [ ] Document the new endpoints in README
+EOF
+
+kobito iteration
+```
+
+Or point at an explicit backlog file:
+
+```sh
+kobito iteration --backlog ./tasks.md
+```
+
+The first run copies `.kobito/tasks.md` (or the file passed via `--backlog`)
+into the state directory. From then on the state copy is the source of truth —
+edit it through:
+
+```sh
+kobito tasks edit
+```
+
+For each unchecked item, kobito branches off the starting branch as
+`kobito/task-<n>-<slug>`, iterates until the agent emits `TASK_COMPLETE`,
+runs `gh pr create`, and marks the line `[x]` in the state copy.
+
+### Common options
 
 | flag                | default   | meaning                                     |
 | ------------------- | --------- | ------------------------------------------- |
-| `--prompt`, `-p`    | required  | the goal to pursue                          |
-| `--max-iterations`  | `50`      | hard cap on iterations                      |
+| `--prompt`, `-p`    | required (continuous) | the goal to pursue              |
+| `--backlog`         | optional (iteration)  | path to a tasks.md backlog      |
+| `--max-iterations`  | `50` / `30` | hard cap on iterations (per task in iteration mode) |
 | `--max-failures`    | `3`       | give up after N consecutive failures        |
 | `--language`        | `en`      | output language (also reads `kobito.toml`)  |
 | `--agent`           | `claude`  | backend agent (only `claude` for now)       |
