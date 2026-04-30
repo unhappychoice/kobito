@@ -107,7 +107,8 @@ impl LogSink {
         self.write("kobito", line);
     }
 
-    pub fn event(&self, raw: &str, event: &AgentEvent) {
+    /// Persist one raw stdout line to events.ndjson.
+    pub fn record_raw_event(&self, raw: &str) {
         if let Ok(json) = serde_json::to_string(&EventLine {
             ts: Utc::now().to_rfc3339(),
             raw,
@@ -115,6 +116,11 @@ impl LogSink {
         {
             let _ = writeln!(f, "{json}");
         }
+    }
+
+    /// Render one parsed event to the terminal + log.ndjson and
+    /// update the in-memory status state.
+    pub fn event(&self, event: &AgentEvent) {
         if let AgentEvent::Usage(u) = event {
             if let Ok(mut s) = self.state.lock() {
                 s.usage = *u;

@@ -167,6 +167,12 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     }
                 }
                 Err(e) => {
+                    if cancelled.load(Ordering::SeqCst) {
+                        // User cancellation — bail out of the
+                        // per-task loop without resetting the worktree
+                        // or counting it as a failure.
+                        break;
+                    }
                     consecutive_failures += 1;
                     sink.note(&format!("✗ failed: {e}"));
                     git::reset_hard(&repo).ok();

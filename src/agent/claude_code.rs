@@ -35,11 +35,14 @@ impl ClaudeCode {
     }
 
     fn resolve_tool(&self, id: &str) -> String {
-        self.tools
-            .lock()
-            .ok()
-            .and_then(|m| m.get(id).cloned())
-            .unwrap_or_else(|| "tool".to_string())
+        // Remove rather than read so the map doesn't grow unbounded
+        // across iterations and a stale tool_use_id can't be matched
+        // against a freshly issued one with the same suffix.
+        if let Ok(mut m) = self.tools.lock() {
+            m.remove(id).unwrap_or_else(|| "tool".to_string())
+        } else {
+            "tool".to_string()
+        }
     }
 }
 

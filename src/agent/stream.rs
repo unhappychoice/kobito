@@ -57,8 +57,9 @@ pub async fn run_streamed(
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
+                        sink.record_raw_event(&line);
                         for event in agent.parse_event(&line) {
-                            sink.event(&line, &event);
+                            sink.event(&event);
                             match &event {
                                 AgentEvent::Message(text) => {
                                     accumulated.push_str(text);

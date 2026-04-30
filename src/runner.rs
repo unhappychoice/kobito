@@ -247,6 +247,12 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 }
             }
             Err(e) => {
+                if args.cancelled.load(Ordering::SeqCst) {
+                    // User cancellation — leave the working tree
+                    // alone and exit the loop, don't count it as a
+                    // failure or burn a retry / backoff.
+                    break;
+                }
                 consecutive_failures += 1;
                 total_retries += 1;
                 args.sink.note(&format!("✗ iteration failed: {e}"));
