@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
-use indicatif::ProgressBar;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -76,7 +75,6 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        bar: &bar,
         cancelled,
     })
     .await?;
@@ -147,7 +145,6 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        bar: &bar,
         cancelled,
     })
     .await?;
@@ -170,7 +167,6 @@ struct LoopArgs<'a> {
     max_iterations: u32,
     max_failures: u32,
     sink: &'a LogSink,
-    bar: &'a ProgressBar,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -188,7 +184,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
             "═══ iteration {iteration} / {} ═══",
             args.max_iterations
         ));
-        ui::set_status(args.bar, iteration, total_retries, "thinking");
+        args.sink
+            .set_iteration_status(iteration, total_retries, "thinking");
 
         let notes = fs::read_to_string(state::notes_path(args.run)).ok();
         let parts = prompt::PromptParts {
@@ -222,7 +219,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                         .note("iteration produced no diff — skipping commit");
                     continue;
                 }
-                ui::set_status(args.bar, iteration, total_retries, "committing");
+                args.sink
+                    .set_iteration_status(iteration, total_retries, "committing");
                 let diff = git::diff_staged(args.repo)?;
                 let style = git::recent_commit_messages(args.repo, 20).unwrap_or_default();
                 let msg = commit::generate_message(args.agent, args.repo, &diff, args.goal, &style)

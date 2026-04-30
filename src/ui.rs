@@ -59,8 +59,3 @@ pub fn make_status_bar() -> ProgressBar {
     bar.enable_steady_tick(Duration::from_millis(120));
     bar
 }
-
-pub fn set_status(bar: &ProgressBar, iteration: u32, retries: u32, state: &str) {
-    bar.set_prefix(iteration.to_string());
-    bar.set_message(format!("retry {retries}  ·  {state}"));
-}

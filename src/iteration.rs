@@ -107,8 +107,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 "── iteration {iteration} / {} ──",
                 args.max_iterations
             ));
-            ui::set_status(
-                &bar,
+            sink.set_iteration_status(
                 iteration,
                 consecutive_failures,
                 &format!("task {}/{}", task_idx, pending.len()),

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use indicatif::ProgressBar;
 
-use crate::agent::AgentEvent;
+use crate::agent::{AgentEvent, Usage};
 
 #[derive(Serialize)]
 struct LogLine<'a> {
@@ -29,6 +29,14 @@ pub struct LogSink {
     events: Arc<Mutex<File>>,
     bar: Option<ProgressBar>,
     color: bool,
+    state: Arc<Mutex<StatusState>>,
+}
+
+#[derive(Default, Clone)]
+struct StatusState {
+    retries: u32,
+    state_label: String,
+    usage: Usage,
 }
 
 impl LogSink {
@@ -48,7 +56,37 @@ impl LogSink {
             events: Arc::new(Mutex::new(events)),
             bar,
             color,
+            state: Arc::new(Mutex::new(StatusState::default())),
         })
+    }
+
+    /// Update the iteration / retry / state label and refresh the bar.
+    /// Token usage is tracked separately and updated whenever a
+    /// Usage event arrives.
+    pub fn set_iteration_status(&self, iteration: u32, retries: u32, state_label: &str) {
+        if let Some(bar) = &self.bar {
+            bar.set_prefix(iteration.to_string());
+        }
+        if let Ok(mut s) = self.state.lock() {
+            s.retries = retries;
+            s.state_label = state_label.to_string();
+        }
+        self.refresh_bar();
+    }
+
+    fn refresh_bar(&self) {
+        let Some(bar) = &self.bar else { return };
+        let s = match self.state.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => return,
+        };
+        bar.set_message(format!(
+            "in {}  ·  out {}  ·  retry {}  ·  {}",
+            format_count(s.usage.input_tokens),
+            format_count(s.usage.output_tokens),
+            s.retries,
+            s.state_label,
+        ));
     }
 
     pub fn write(&self, source: &str, line: &str) {
@@ -77,6 +115,12 @@ impl LogSink {
         {
             let _ = writeln!(f, "{json}");
         }
+        if let AgentEvent::Usage(u) = event {
+            if let Ok(mut s) = self.state.lock() {
+                s.usage = *u;
+            }
+            self.refresh_bar();
+        }
         if let Some(formatted) = format_event(event) {
             self.write("agent", &formatted);
         }
@@ -98,6 +142,16 @@ impl LogSink {
         } else {
             println!("{styled}");
         }
+    }
+}
+
+fn format_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
     }
 }
 
