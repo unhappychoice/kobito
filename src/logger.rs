@@ -151,44 +151,40 @@ fn colorize(judge: &str, full: &str) -> String {
 }
 
 fn section_for(line: &str) -> (u8, Option<u8>, bool) {
-    // Three accents on a neutral dark base:
-    //   blue  — kobito's own voice (start / iteration / task)
-    //   green — commit landed
-    //   red   — error / cancellation
-    // Everything else (agent body, tool calls, summary) sits on the
-    // same neutral slate with progressively dimmer foregrounds, so
-    // the eye treats them as one quiet stream and the three accent
-    // colours pop out as section boundaries.
+    // Two backgrounds: deep desaturated blue 17 for everything
+    // kobito itself emits, neutral slate 234 for the agent stream.
+    // Red 52 only for failures. Within the blue channel the
+    // foreground tone separates header weight from supporting
+    // metadata; bold only on the major boundaries.
     if line.starts_with("kobito start")
         || line.starts_with("kobito resume")
         || line.starts_with("project:")
     {
-        // run begins — deepest blue (start banner + the project /
-        // branch / run-id metadata line that follows it)
-        (17, Some(159), true)
+        // run begins — kobito blue, brightest FG, bold
+        (17, Some(153), true)
     } else if line.starts_with("═══")
         || line.starts_with("──")
         || line.starts_with("=== task")
     {
-        // iteration / task boundary — softer blue
-        (24, Some(117), true)
+        // iteration / task boundary — kobito blue, mid FG, bold
+        (17, Some(117), true)
     } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        // commit / PR landed — green
-        (22, Some(120), true)
-    } else if line.starts_with("✗") || line.starts_with("interrupting") {
-        // error / cancellation — red
-        (52, Some(210), true)
+        // commit / PR landed — kobito blue, brightest FG, bold
+        (17, Some(153), true)
     } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
     {
-        // summary line — neutral, mid-grey FG
-        (234, Some(244), false)
+        // summary / tokens / sentinel — kobito blue, mid FG, no bold
+        (17, Some(117), false)
+    } else if line.starts_with("✗") || line.starts_with("interrupting") {
+        // error / cancellation — red
+        (52, Some(210), true)
     } else if line.starts_with("▶") {
-        // tool call — neutral, dimmest FG
+        // tool call — neutral slate, dimmest FG
         (234, Some(240), false)
     } else {
-        // body — neutral, default FG
+        // agent body — neutral slate, default FG
         (234, None, false)
     }
 }
