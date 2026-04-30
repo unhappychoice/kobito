@@ -16,7 +16,8 @@ the project's own conventions, until you stop it.
 - Preset system with `{{var}}` substitution (project + global)
 - Per-run `notes.md` auto-maintained by the agent
 - `kobito resume` with an interactive picker of recent runs
-- State under `$XDG_STATE_HOME/kobito/`, real-time log passthrough + status bar
+- State under `$XDG_STATE_HOME/kobito/`, event-driven streaming + status bar
+- Per-iteration token usage logged from each agent's structured event stream
 
 Project conventions — output language, code style, commit format, branch
 names — are deferred to the agent's own memory files (`CLAUDE.md` /
@@ -129,7 +130,8 @@ kobito iter --preset small-feature --backlog tasks.md
             └── 2026-05-01T12-00-00/   # one directory per invocation = run id
                 ├── meta.json       # branch, goal, agent — used for resume
                 ├── notes.md        # cross-iteration learnings, agent-maintained
-                ├── log.ndjson      # streamed agent output
+                ├── log.ndjson      # human-readable streamed lines
+                ├── events.ndjson   # raw structured events from the agent
                 └── prompts/
                     └── iter-0001.md
 ```
@@ -173,7 +175,7 @@ the earlier iterations learned.
 Each iteration:
 
 1. Build a prompt: cross-iteration notes (if any) + the goal + a `NATURAL_STOP` / `TASK_COMPLETE` escape hatch.
-2. Invoke the agent in non-interactive mode, streaming stdout/stderr to the terminal and to `log.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
+2. Invoke the agent in non-interactive mode with its structured-output flag (`claude --output-format stream-json` / `codex exec --json`). Each line is parsed into a normalised `AgentEvent` (Message / ToolStart / ToolEnd / Usage / Stop / Other), formatted onto the terminal, and persisted both as a human-readable line in `log.ndjson` and as a raw JSON event in `events.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
 3. If the agent emitted a diff, generate a Conventional Commits message via a one-shot agent call and commit.
 4. If the agent failed, `git reset --hard` and retry with exponential backoff.
 5. If the agent emits the literal sentinel token (`NATURAL_STOP` for `cont`, `TASK_COMPLETE` for `iter`), exit cleanly.
