@@ -97,6 +97,25 @@ pub fn notes_path(project: &ProjectPaths) -> PathBuf {
     project.root.join("notes.md")
 }
 
+pub fn tasks_path(project: &ProjectPaths) -> PathBuf {
+    project.root.join("tasks.md")
+}
+
+pub fn seed_tasks_if_needed(project: &ProjectPaths, repo: &Path) -> Result<PathBuf> {
+    let dest = tasks_path(project);
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let src = repo.join(".kobito/tasks.md");
+    let body = if src.exists() {
+        fs::read_to_string(&src)?
+    } else {
+        String::new()
+    };
+    fs::write(&dest, body)?;
+    Ok(dest)
+}
+
 pub fn list_projects() -> Result<()> {
     let root = state_root().join("projects");
     if !root.exists() {

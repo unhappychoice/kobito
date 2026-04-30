@@ -54,6 +54,10 @@ pub fn create_and_checkout(repo: &Path, branch: &str) -> Result<()> {
     run(repo, &["checkout", "-b", branch])
 }
 
+pub fn checkout(repo: &Path, branch: &str) -> Result<()> {
+    run(repo, &["checkout", branch])
+}
+
 pub fn stage_all(repo: &Path) -> Result<()> {
     run(repo, &["add", "-A"])
 }
