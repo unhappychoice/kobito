@@ -111,3 +111,147 @@ pub fn save_prompt(prompts_dir: &Path, iteration: u32, body: &str) -> Result<()>
     fs::write(path, body)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(goal: &str, iteration: u32) -> PromptParts {
+        PromptParts {
+            goal: goal.to_string(),
+            iteration,
+            notes: None,
+            preset: None,
+        }
+    }
+
+    #[test]
+    fn iteration_prompt_includes_meta_goal_and_iteration() {
+        let out = build_iteration_prompt(&parts("ship the thing", 7));
+        assert!(out.starts_with("# About this run"));
+        assert!(out.contains("NATURAL_STOP"));
+        assert!(out.contains("## Goal\n\nship the thing"));
+        assert!(out.contains("## Iteration 7"));
+    }
+
+    #[test]
+    fn iteration_prompt_trims_goal() {
+        let out = build_iteration_prompt(&parts("  padded goal  \n", 1));
+        assert!(out.contains("## Goal\n\npadded goal\n"));
+    }
+
+    #[test]
+    fn iteration_prompt_omits_notes_section_when_absent() {
+        let out = build_iteration_prompt(&parts("g", 1));
+        assert!(!out.contains("## Cross-iteration notes"));
+    }
+
+    #[test]
+    fn iteration_prompt_omits_notes_section_when_blank() {
+        let mut p = parts("g", 1);
+        p.notes = Some("   \n  ".into());
+        let out = build_iteration_prompt(&p);
+        assert!(!out.contains("## Cross-iteration notes"));
+    }
+
+    #[test]
+    fn iteration_prompt_includes_notes_when_present() {
+        let mut p = parts("g", 1);
+        p.notes = Some("- learned X\n- avoid Y".into());
+        let out = build_iteration_prompt(&p);
+        assert!(out.contains("## Cross-iteration notes\n\n- learned X\n- avoid Y\n\n"));
+    }
+
+    #[test]
+    fn iteration_prompt_includes_preset_before_notes() {
+        let mut p = parts("g", 1);
+        p.preset = Some("PRESET BODY".into());
+        p.notes = Some("NOTES".into());
+        let out = build_iteration_prompt(&p);
+        let preset_idx = out.find("PRESET BODY").unwrap();
+        let notes_idx = out.find("## Cross-iteration notes").unwrap();
+        let goal_idx = out.find("## Goal").unwrap();
+        assert!(preset_idx < notes_idx);
+        assert!(notes_idx < goal_idx);
+    }
+
+    #[test]
+    fn iteration_prompt_ends_with_focus_directive() {
+        let out = build_iteration_prompt(&parts("g", 1));
+        assert!(out.trim_end().ends_with(
+            "Make a small, self-contained improvement toward the goal. Stop when one logical change is complete so the diff can be committed."
+        ));
+    }
+
+    #[test]
+    fn task_prompt_includes_meta_body_and_iteration() {
+        let out = build_task_prompt(&parts("ignored goal", 3), "wire up X");
+        assert!(out.starts_with("# About this run"));
+        assert!(out.contains("TASK_COMPLETE"));
+        assert!(out.contains("## Single task\n\nwire up X"));
+        assert!(out.contains("## Iteration 3"));
+    }
+
+    #[test]
+    fn task_prompt_does_not_use_continuous_meta() {
+        let out = build_task_prompt(&parts("g", 1), "task");
+        assert!(!out.contains("NATURAL_STOP"));
+    }
+
+    #[test]
+    fn task_prompt_omits_notes_when_blank() {
+        let mut p = parts("g", 1);
+        p.notes = Some("\n".into());
+        let out = build_task_prompt(&p, "task");
+        assert!(!out.contains("## Cross-iteration notes"));
+    }
+
+    #[test]
+    fn task_prompt_includes_preset_and_notes() {
+        let mut p = parts("g", 2);
+        p.preset = Some("PRESET".into());
+        p.notes = Some("a note".into());
+        let out = build_task_prompt(&p, "do thing");
+        assert!(out.contains("PRESET"));
+        assert!(out.contains("## Cross-iteration notes\n\na note"));
+        assert!(out.contains("## Single task\n\ndo thing"));
+    }
+
+    #[test]
+    fn task_prompt_ends_with_focus_directive() {
+        let out = build_task_prompt(&parts("g", 1), "task");
+        assert!(out.trim_end().ends_with(
+            "Make focused progress toward completing only this single task. Stop when one logical change is complete so the diff can be committed."
+        ));
+    }
+
+    #[test]
+    fn save_prompt_writes_padded_filename() {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-prompt-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        save_prompt(&dir, 5, "hello body").unwrap();
+        let path = dir.join("iter-0005.md");
+        let body = fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "hello body");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_prompt_overwrites_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-prompt-overwrite-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        save_prompt(&dir, 1, "first").unwrap();
+        save_prompt(&dir, 1, "second").unwrap();
+        let body = fs::read_to_string(dir.join("iter-0001.md")).unwrap();
+        assert_eq!(body, "second");
+        fs::remove_dir_all(&dir).ok();
+    }
+}

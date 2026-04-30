@@ -256,3 +256,242 @@ fn section_for(line: &str) -> (&'static str, Option<&'static str>, bool) {
         (BODY_BG, None, false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process;
+
+    fn unique_tmp(label: &str) -> PathBuf {
+        let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("kobito-logger-{label}-{}-{ts}", process::id()));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn format_count_renders_compact_units() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1.0k");
+        assert_eq!(format_count(1_500), "1.5k");
+        assert_eq!(format_count(1_000_000), "1.0M");
+        assert_eq!(format_count(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn format_event_returns_none_for_blank_message() {
+        assert!(format_event(&AgentEvent::Message(String::new())).is_none());
+        assert!(format_event(&AgentEvent::Message("\n\n".into())).is_none());
+    }
+
+    #[test]
+    fn format_event_trims_trailing_newlines_on_message() {
+        let s = format_event(&AgentEvent::Message("hello\n\n".into())).unwrap();
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn format_event_renders_tool_start_with_and_without_summary() {
+        let with = format_event(&AgentEvent::ToolStart {
+            tool: "Read".into(),
+            summary: Some("file.rs".into()),
+        })
+        .unwrap();
+        assert_eq!(with, "▶ Read: file.rs");
+
+        let without = format_event(&AgentEvent::ToolStart {
+            tool: "Read".into(),
+            summary: None,
+        })
+        .unwrap();
+        assert_eq!(without, "▶ Read");
+    }
+
+    #[test]
+    fn format_event_only_renders_failed_tool_end() {
+        let ok = format_event(&AgentEvent::ToolEnd {
+            tool: "Read".into(),
+            ok: true,
+        });
+        assert!(ok.is_none());
+        let failed = format_event(&AgentEvent::ToolEnd {
+            tool: "Read".into(),
+            ok: false,
+        })
+        .unwrap();
+        assert_eq!(failed, "✗ Read");
+    }
+
+    #[test]
+    fn format_event_renders_stop_reason() {
+        let s = format_event(&AgentEvent::Stop {
+            reason: "natural".into(),
+        })
+        .unwrap();
+        assert_eq!(s, "(stop: natural)");
+    }
+
+    #[test]
+    fn format_event_drops_usage_and_other() {
+        assert!(format_event(&AgentEvent::Usage(Usage::default())).is_none());
+        assert!(format_event(&AgentEvent::Other("debug".into())).is_none());
+    }
+
+    #[test]
+    fn section_for_marks_major_headers_bold() {
+        for header in [
+            "kobito start",
+            "kobito resume foo",
+            "project: kobito",
+            "═══════",
+            "── line",
+            "=== task 1 ===",
+            "✓ committed abc",
+            "✓ PR opened",
+        ] {
+            let (_, fg, bold) = section_for(header);
+            assert!(bold, "expected bold for {header:?}");
+            assert!(fg.is_some());
+        }
+    }
+
+    #[test]
+    fn section_for_marks_summary_lines_non_bold() {
+        for line in [
+            "done iter 1",
+            "  tokens — 100",
+            "agent reported NATURAL_STOP",
+        ] {
+            let (_, fg, bold) = section_for(line);
+            assert!(!bold, "expected non-bold for {line:?}");
+            assert!(fg.is_some());
+        }
+    }
+
+    #[test]
+    fn section_for_routes_errors_to_maroon_bg() {
+        for err in ["✗ failed", "interrupting agent"] {
+            let (bg, _, bold) = section_for(err);
+            assert!(bold);
+            assert!(bg.contains("50;22;26"), "expected maroon bg for {err:?}");
+        }
+    }
+
+    #[test]
+    fn section_for_classifies_tool_calls_and_body() {
+        let (_, fg, bold) = section_for("▶ Read");
+        assert!(!bold);
+        assert!(fg.is_some());
+
+        let (bg, fg, bold) = section_for("plain agent body");
+        assert!(!bold);
+        assert!(fg.is_none());
+        assert!(bg.contains("18;19;22"));
+    }
+
+    #[test]
+    fn colorize_wraps_with_reset_sequence() {
+        let s = colorize("hello", "padding hello");
+        assert!(s.starts_with("\x1b["));
+        assert!(s.ends_with("\x1b[K\x1b[0m"));
+        assert!(s.contains("padding hello"));
+    }
+
+    #[test]
+    fn open_creates_log_and_events_files() {
+        let dir = unique_tmp("open");
+        let log_path = dir.join("log.ndjson");
+        let _sink = LogSink::open(&log_path, None).expect("open should succeed");
+        assert!(log_path.exists());
+        assert!(dir.join("events.ndjson").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_appends_a_json_line_to_log() {
+        let dir = unique_tmp("write");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.write("agent", "hello");
+        let body = fs::read_to_string(&log_path).unwrap();
+        assert!(body.contains("\"source\":\"agent\""));
+        assert!(body.contains("\"line\":\"hello\""));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn note_records_under_kobito_source() {
+        let dir = unique_tmp("note");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.note("starting up");
+        let body = fs::read_to_string(&log_path).unwrap();
+        assert!(body.contains("\"source\":\"kobito\""));
+        assert!(body.contains("starting up"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn record_raw_event_appends_to_events_file() {
+        let dir = unique_tmp("raw");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.record_raw_event("{\"k\":1}");
+        let body = fs::read_to_string(dir.join("events.ndjson")).unwrap();
+        assert!(body.contains("\"raw\""));
+        assert!(body.contains("{\\\"k\\\":1}"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn event_writes_message_and_skips_silent_variants() {
+        let dir = unique_tmp("event");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.event(&AgentEvent::Message("payload".into()));
+        sink.event(&AgentEvent::Usage(Usage {
+            input_tokens: 5,
+            output_tokens: 7,
+            cached_input_tokens: 0,
+        }));
+        sink.event(&AgentEvent::Other("debug".into()));
+        let body = fs::read_to_string(&log_path).unwrap();
+        assert!(body.contains("payload"));
+        let lines = body.lines().count();
+        assert_eq!(lines, 1, "only the Message event should be persisted");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn event_usage_updates_internal_state() {
+        let dir = unique_tmp("usage");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.event(&AgentEvent::Usage(Usage {
+            input_tokens: 11,
+            output_tokens: 22,
+            cached_input_tokens: 0,
+        }));
+        let s = sink.state.lock().unwrap();
+        assert_eq!(s.usage.input_tokens, 11);
+        assert_eq!(s.usage.output_tokens, 22);
+        drop(s);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_iteration_status_updates_state_without_a_bar() {
+        let dir = unique_tmp("status");
+        let log_path = dir.join("log.ndjson");
+        let sink = LogSink::open(&log_path, None).unwrap();
+        sink.set_iteration_status(2, 3, "running");
+        let s = sink.state.lock().unwrap();
+        assert_eq!(s.retries, 3);
+        assert_eq!(s.state_label, "running");
+        drop(s);
+        fs::remove_dir_all(&dir).ok();
+    }
+}

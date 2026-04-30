@@ -40,11 +40,13 @@ pub async fn append_learning(
 }
 
 fn excerpt(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    let total = s.chars().count();
+    if total <= max {
         return s.to_string();
     }
-    let head = &s[..max / 2];
-    let tail = &s[s.len() - max / 2..];
+    let keep = max / 2;
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(total - keep).collect();
     format!("{head}\n…\n[diff truncated]\n…\n{tail}")
 }
 
@@ -72,6 +74,18 @@ fn append_section(path: &Path, iteration: u32, body: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_path(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-notes-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("notes.md")
+    }
 
     #[test]
     fn clean_strips_fences() {
@@ -85,8 +99,25 @@ mod tests {
     }
 
     #[test]
+    fn clean_returns_empty_for_blank() {
+        assert_eq!(clean(""), "");
+        assert_eq!(clean("   \n  "), "");
+    }
+
+    #[test]
+    fn clean_handles_fence_without_newline() {
+        assert_eq!(clean("```"), "");
+    }
+
+    #[test]
     fn excerpt_passes_through_when_short() {
         assert_eq!(excerpt("short", 100), "short");
+    }
+
+    #[test]
+    fn excerpt_passes_through_at_exact_limit() {
+        let s = "a".repeat(50);
+        assert_eq!(excerpt(&s, 50), s);
     }
 
     #[test]
@@ -95,5 +126,73 @@ mod tests {
         let out = excerpt(&s, 4_000);
         assert!(out.contains("[diff truncated]"));
         assert!(out.len() < 5_000);
+    }
+
+    #[test]
+    fn excerpt_keeps_head_and_tail_markers() {
+        let head = "H".repeat(100);
+        let tail = "T".repeat(100);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = excerpt(&input, 20);
+        assert!(out.starts_with(&"H".repeat(10)));
+        assert!(out.ends_with(&"T".repeat(10)));
+        assert!(!out.contains("MIDDLE"));
+    }
+
+    #[test]
+    fn excerpt_handles_multibyte_chars_without_panic() {
+        let head = "あ".repeat(100);
+        let tail = "い".repeat(100);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = excerpt(&input, 20);
+        assert!(out.starts_with(&"あ".repeat(10)));
+        assert!(out.ends_with(&"い".repeat(10)));
+        assert!(out.contains("[diff truncated]"));
+    }
+
+    #[test]
+    fn append_section_creates_file_when_missing() {
+        let path = unique_path("create");
+        assert!(!path.exists());
+        append_section(&path, 1, "- learning one").unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("## iteration 1 —"));
+        assert!(contents.contains("- learning one"));
+        assert!(contents.ends_with('\n'));
+    }
+
+    #[test]
+    fn append_section_appends_to_existing_file() {
+        let path = unique_path("append");
+        fs::write(&path, "preexisting\n").unwrap();
+        append_section(&path, 2, "- new note").unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("preexisting\n"));
+        assert!(contents.contains("## iteration 2 —"));
+        assert!(contents.contains("- new note"));
+    }
+
+    #[test]
+    fn append_section_supports_multiple_iterations() {
+        let path = unique_path("multi");
+        append_section(&path, 1, "- first").unwrap();
+        append_section(&path, 2, "- second").unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("## iteration 1 —"));
+        assert!(contents.contains("## iteration 2 —"));
+        let pos1 = contents.find("- first").unwrap();
+        let pos2 = contents.find("- second").unwrap();
+        assert!(pos1 < pos2);
+    }
+
+    #[test]
+    fn append_section_returns_error_when_path_is_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-notes-dirpath-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(append_section(&dir, 1, "x").is_err());
     }
 }

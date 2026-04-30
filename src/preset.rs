@@ -92,6 +92,73 @@ mod tests {
             .collect()
     }
 
+    fn unique_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-preset-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_local_preset(repo: &Path, name: &str, body: &str) -> PathBuf {
+        let dir = repo.join(".kobito/presets");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.md"));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn config_root_path_ends_with_kobito() {
+        let root = config_root();
+        let leaf = root.file_name().and_then(|s| s.to_str());
+        assert!(
+            matches!(leaf, Some("kobito" | ".kobito-config")),
+            "unexpected config_root leaf: {leaf:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_returns_local_preset_when_present() {
+        let repo = unique_dir("resolve-local");
+        let expected = write_local_preset(&repo, "cover", "body");
+        let found = resolve("cover", &repo).unwrap();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn resolve_errors_when_preset_missing_in_both_locations() {
+        let repo = unique_dir("resolve-missing");
+        let unique_name = format!(
+            "no-such-preset-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        );
+        let err = resolve(&unique_name, &repo).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not found"));
+        assert!(msg.contains(&unique_name));
+    }
+
+    #[test]
+    fn load_reads_preset_and_substitutes_variables() {
+        let repo = unique_dir("load");
+        write_local_preset(&repo, "iter", "Cover {{path}} to {{target}}%");
+        let v = vars(&[("path", "src/api"), ("target", "80")]);
+        let out = load("iter", &repo, &v).unwrap();
+        assert_eq!(out, "Cover src/api to 80%");
+    }
+
+    #[test]
+    fn load_propagates_substitute_errors_for_missing_vars() {
+        let repo = unique_dir("load-missing");
+        write_local_preset(&repo, "iter", "Cover {{path}}");
+        let err = load("iter", &repo, &HashMap::new()).unwrap_err();
+        assert!(err.to_string().contains("path"));
+    }
+
     #[test]
     fn substitute_replaces_variables() {
         let v = vars(&[("path", "src/api"), ("target", "80")]);

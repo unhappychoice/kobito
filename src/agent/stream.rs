@@ -115,3 +115,143 @@ pub async fn run_oneshot(mut cmd: Command, name: &str) -> Result<String> {
     }
     Ok(String::from_utf8(out.stdout)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process;
+
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_tmp(prefix: &str) -> TempDir {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let pid = process::id();
+        let mut path = std::env::temp_dir();
+        path.push(format!("kobito-stream-{prefix}-{pid}-{nanos}"));
+        std::fs::create_dir_all(&path).unwrap();
+        TempDir(path)
+    }
+
+    fn open_sink(prefix: &str) -> (LogSink, TempDir) {
+        let dir = unique_tmp(prefix);
+        let log = dir.0.join("log.ndjson");
+        let sink = LogSink::open(&log, None).unwrap();
+        (sink, dir)
+    }
+
+    struct FakeAgent;
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+        fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
+            vec![AgentEvent::Message(line.to_string())]
+        }
+    }
+
+    #[tokio::test]
+    async fn run_oneshot_returns_stdout_on_success() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf 'branch-name'");
+        let out = run_oneshot(cmd, "fake").await.unwrap();
+        assert_eq!(out, "branch-name");
+    }
+
+    #[tokio::test]
+    async fn run_oneshot_errors_on_nonzero_exit_with_stderr() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf 'boom' >&2; exit 7");
+        let err = run_oneshot(cmd, "fake").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("fake"), "msg should mention agent: {msg}");
+        assert!(msg.contains("boom"), "msg should include stderr: {msg}");
+    }
+
+    #[tokio::test]
+    async fn run_oneshot_errors_when_binary_missing() {
+        let cmd = Command::new("kobito-no-such-binary-xyz");
+        let err = run_oneshot(cmd, "ghost").await.unwrap_err();
+        assert!(format!("{err:#}").contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn run_streamed_collects_messages_from_stdout() {
+        let (sink, _dir) = open_sink("ok");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf 'hello\\nworld\\n'");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let outcome = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .unwrap();
+        assert!(outcome.stdout.contains("hello"));
+        assert!(outcome.stdout.contains("world"));
+        assert!(!outcome.natural_stop);
+        assert!(!outcome.task_complete);
+    }
+
+    #[tokio::test]
+    async fn run_streamed_detects_natural_stop_and_task_complete() {
+        let (sink, _dir) = open_sink("stop");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf 'NATURAL_STOP\\nTASK_COMPLETE\\n'");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let outcome = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .unwrap();
+        assert!(outcome.natural_stop);
+        assert!(outcome.task_complete);
+    }
+
+    #[tokio::test]
+    async fn run_streamed_errors_on_nonzero_exit() {
+        let (sink, _dir) = open_sink("fail");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo bye; exit 3");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let err = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .err()
+            .unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("fake"), "msg should mention agent: {msg}");
+        assert!(msg.contains("exited"), "msg should mention exit: {msg}");
+    }
+
+    #[tokio::test]
+    async fn run_streamed_bails_with_cancelled_when_flag_is_set() {
+        let (sink, _dir) = open_sink("cancel");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 5");
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let err = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn run_streamed_errors_when_binary_missing() {
+        let (sink, _dir) = open_sink("missing");
+        let cmd = Command::new("kobito-no-such-binary-xyz");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let err = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .err()
+            .unwrap();
+        assert!(format!("{err:#}").contains("fake"));
+    }
+}
