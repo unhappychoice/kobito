@@ -161,7 +161,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                         out.usage.cached_input_tokens,
                     ));
                     if out.task_complete {
-                        sink.note("agent reported TASK_COMPLETE");
+                        sink.note("agent reported task_complete");
                         completed = true;
                         break;
                     }
