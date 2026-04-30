@@ -299,7 +299,11 @@ mod tests {
     fn recent_runs_sorts_desc_and_truncates_to_limit() {
         let dir = unique_dir("recent-sort");
         let project = project_with_root(dir.clone(), "p-4");
-        for id in ["2026-01-01T00-00-00", "2026-03-01T00-00-00", "2026-02-01T00-00-00"] {
+        for id in [
+            "2026-01-01T00-00-00",
+            "2026-03-01T00-00-00",
+            "2026-02-01T00-00-00",
+        ] {
             let rd = project.root.join("runs").join(id);
             fs::create_dir_all(&rd).unwrap();
             fs::write(
