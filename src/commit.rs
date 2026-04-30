@@ -68,13 +68,12 @@ fn clean(raw: &str) -> String {
 
 fn fallback(goal: &str) -> String {
     goal.lines()
-        .next()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
         .unwrap_or("ongoing work")
         .chars()
         .take(72)
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect()
 }
 
 #[cfg(test)]
@@ -154,5 +153,15 @@ mod tests {
     #[test]
     fn fallback_uses_default_for_empty_goal() {
         assert_eq!(fallback(""), "ongoing work");
+    }
+
+    #[test]
+    fn fallback_skips_blank_first_line() {
+        assert_eq!(fallback("   \nreal goal"), "real goal");
+    }
+
+    #[test]
+    fn fallback_uses_default_when_all_lines_blank() {
+        assert_eq!(fallback("   \n\t\n  "), "ongoing work");
     }
 }
