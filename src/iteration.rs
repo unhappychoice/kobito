@@ -3,7 +3,6 @@ use std::path::Path;
 use std::process::Command as StdCommand;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use crate::cli::IterationArgs;
 use crate::{
@@ -55,6 +54,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
     }
 
     let starting_branch = git::current_branch(&repo)?;
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
 
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -96,7 +96,6 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             body
         ));
 
-        let started = Instant::now();
         let mut consecutive_failures = 0u32;
         let mut completed = false;
 
@@ -111,7 +110,6 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             ui::set_status(
                 &bar,
                 iteration,
-                started.elapsed(),
                 consecutive_failures,
                 &format!("task {}/{}", task_idx, pending.len()),
             );

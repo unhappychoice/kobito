@@ -6,7 +6,6 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use crate::agent::Agent;
 use crate::cli::{ContinuousArgs, ResumeArgs};
@@ -57,6 +56,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         },
     )?;
 
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&run.log_file, Some(bar.clone()))?;
     let cancelled = install_cancel_handler();
@@ -124,6 +124,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         },
     )?;
 
+    let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&new_run.log_file, Some(bar.clone()))?;
     let cancelled = install_cancel_handler();
@@ -174,7 +175,6 @@ struct LoopArgs<'a> {
 }
 
 async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
-    let started = Instant::now();
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -188,13 +188,7 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
             "═══ iteration {iteration} / {} ═══",
             args.max_iterations
         ));
-        ui::set_status(
-            args.bar,
-            iteration,
-            started.elapsed(),
-            total_retries,
-            "thinking",
-        );
+        ui::set_status(args.bar, iteration, total_retries, "thinking");
 
         let notes = fs::read_to_string(state::notes_path(args.run)).ok();
         let parts = prompt::PromptParts {
@@ -228,13 +222,7 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                         .note("iteration produced no diff — skipping commit");
                     continue;
                 }
-                ui::set_status(
-                    args.bar,
-                    iteration,
-                    started.elapsed(),
-                    total_retries,
-                    "committing",
-                );
+                ui::set_status(args.bar, iteration, total_retries, "committing");
                 let diff = git::diff_staged(args.repo)?;
                 let style = git::recent_commit_messages(args.repo, 20).unwrap_or_default();
                 let msg = commit::generate_message(args.agent, args.repo, &diff, args.goal, &style)
