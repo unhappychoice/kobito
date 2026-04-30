@@ -8,6 +8,7 @@ mod commit;
 mod git;
 mod iteration;
 mod logger;
+mod notes;
 mod preset;
 mod prompt;
 mod runner;
