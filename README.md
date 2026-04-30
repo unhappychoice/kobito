@@ -10,8 +10,8 @@ the project's own conventions, until you stop it.
 
 ## Features
 
-- `continuous` mode — one branch, many commits, run until you stop it
-- `iteration` mode — per-task branch + PR from a `tasks.md` backlog
+- `cont` mode — one branch, many commits, run until you stop it
+- `iter` mode — per-task branch + PR from a `tasks.md` backlog
 - Claude Code and OpenAI Codex backends behind a single `Agent` trait
 - Preset system with `{{var}}` substitution (project + global)
 - Per-run `notes.md` auto-maintained by the agent
@@ -36,7 +36,7 @@ remote.
 
 ## Usage
 
-### continuous
+### cont
 
 Pursue a single open-ended goal on one working branch:
 
@@ -45,7 +45,7 @@ Pursue a single open-ended goal on one working branch:
 kobito cont --prompt "Increase test coverage in src/"
 ```
 
-### iteration
+### iter
 
 Consume a backlog of small tasks, one branch + PR per task:
 
@@ -97,9 +97,9 @@ Resolution checks (1) first, then (2). Missing preset → error.
 kobito cont --preset coverage --var path=src/api --var target=80
 ```
 
-In `continuous` mode `--preset` is **mutually exclusive with `--prompt`** — the resolved preset body becomes the goal.
+In `cont` mode `--preset` is **mutually exclusive with `--prompt`** — the resolved preset body becomes the goal.
 
-In `iteration` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
+In `iter` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
 
 ```sh
 kobito iter --preset small-feature --backlog tasks.md
@@ -109,8 +109,8 @@ kobito iter --preset small-feature --backlog tasks.md
 
 | flag                | default   | meaning                                     |
 | ------------------- | --------- | ------------------------------------------- |
-| `--prompt`, `-p`    | required (continuous) | the goal to pursue              |
-| `--backlog`         | optional (iteration)  | path to a tasks.md backlog      |
+| `--prompt`, `-p`    | required (cont) | the goal to pursue                    |
+| `--backlog`         | optional (iter)  | path to a tasks.md backlog           |
 | `--preset`          | optional  | preset name (resolved per the order above)  |
 | `--var key=value`   | repeatable | substitute `{{key}}` in the preset         |
 | `--max-iterations`  | `50` / `30` | hard cap on iterations (per task in iteration mode) |
@@ -135,7 +135,7 @@ kobito iter --preset small-feature --backlog tasks.md
 ```
 
 `notes.md` lives **per run**, not per project. Each invocation gets a
-fresh memory file, and iteration mode (which starts a new run per
+fresh memory file, and `iter` mode (which starts a new run per
 task) automatically gets a separate notes.md per task — coverage
 push and refactor learnings don't bleed into each other.
 
@@ -176,9 +176,9 @@ Each iteration:
 2. Invoke the agent in non-interactive mode, streaming stdout/stderr to the terminal and to `log.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
 3. If the agent emitted a diff, generate a Conventional Commits message via a one-shot agent call and commit.
 4. If the agent failed, `git reset --hard` and retry with exponential backoff.
-5. If the agent emits the literal sentinel token (`NATURAL_STOP` for continuous, `TASK_COMPLETE` for iteration), exit cleanly.
+5. If the agent emits the literal sentinel token (`NATURAL_STOP` for `cont`, `TASK_COMPLETE` for `iter`), exit cleanly.
 
-Single branch, single PR, many commits — by design (continuous mode). One branch + PR per task (iteration mode).
+Single branch, single PR, many commits — by design (`cont` mode). One branch + PR per task (`iter` mode).
 
 ## License
 
