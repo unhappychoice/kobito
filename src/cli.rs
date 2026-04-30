@@ -55,10 +55,6 @@ pub struct IterationArgs {
     #[arg(long, default_value_t = 3)]
     pub max_failures: u32,
 
-    /// Output language for code, comments, commit messages.
-    #[arg(long)]
-    pub language: Option<String>,
-
     /// Agent backend (currently only `claude`).
     #[arg(long, default_value = "claude")]
     pub agent: String,
@@ -81,10 +77,6 @@ pub struct ContinuousArgs {
     /// Maximum number of consecutive failures before giving up.
     #[arg(long, default_value_t = 3)]
     pub max_failures: u32,
-
-    /// Output language for code, comments, commit messages.
-    #[arg(long)]
-    pub language: Option<String>,
 
     /// Agent backend (currently only `claude`).
     #[arg(long, default_value = "claude")]

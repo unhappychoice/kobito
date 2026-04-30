@@ -6,16 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::IterationArgs;
-use crate::{agent, commit, config, git, logger::LogSink, prompt, state, tasks::Backlog, ui};
+use crate::{agent, commit, git, logger::LogSink, prompt, state, tasks::Backlog, ui};
 
 pub async fn run(args: IterationArgs) -> Result<()> {
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
     }
-
-    let project_cfg = config::load(&repo)?;
-    let language = config::resolve_language(args.language.as_deref(), &project_cfg);
 
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
