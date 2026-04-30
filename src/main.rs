@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod agent;
 mod cli;
 mod config;
 mod git;
