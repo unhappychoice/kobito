@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::logger::LogSink;
 
 mod claude_code;
+mod codex;
 mod stream;
 
 pub use stream::AgentOutcome;
@@ -17,7 +18,8 @@ pub trait Agent: Send + Sync {
 pub fn from_name(name: &str) -> Result<Box<dyn Agent>> {
     match name {
         "claude" | "claude-code" => Ok(Box::new(claude_code::ClaudeCode)),
-        other => bail!("unknown agent `{other}` — supported: claude, claude-code"),
+        "codex" => Ok(Box::new(codex::Codex)),
+        other => bail!("unknown agent `{other}` — supported: claude, claude-code, codex"),
     }
 }
 
