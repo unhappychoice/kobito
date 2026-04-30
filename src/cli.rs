@@ -1,7 +1,8 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
-use crate::runner;
+use crate::{iteration, runner};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -18,6 +19,8 @@ pub struct Cli {
 pub enum Command {
     /// Run a never-ending goal on a single branch with many commits.
     Continuous(ContinuousArgs),
+    /// Consume a tasks.md backlog, one branch + PR per task.
+    Iteration(IterationArgs),
     /// List all known projects with their last run.
     Ls,
     /// Replay the last run's log for a project.
@@ -35,6 +38,34 @@ pub enum Command {
 pub enum TasksAction {
     /// Open $EDITOR on the state copy of tasks.md.
     Edit,
+}
+
+#[derive(Parser, Debug)]
+pub struct IterationArgs {
+    /// Path to a tasks.md backlog. If omitted, uses the state copy
+    /// (seeded from .kobito/tasks.md on first run).
+    #[arg(long)]
+    pub backlog: Option<PathBuf>,
+
+    /// Maximum iterations per task before giving up.
+    #[arg(long, default_value_t = 30)]
+    pub max_iterations: u32,
+
+    /// Maximum consecutive failures per task before skipping.
+    #[arg(long, default_value_t = 3)]
+    pub max_failures: u32,
+
+    /// Output language for code, comments, commit messages.
+    #[arg(long)]
+    pub language: Option<String>,
+
+    /// Agent backend (currently only `claude`).
+    #[arg(long, default_value = "claude")]
+    pub agent: String,
+
+    /// Skip the clean-tree check (dangerous).
+    #[arg(long)]
+    pub allow_dirty: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -67,6 +98,7 @@ pub struct ContinuousArgs {
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Continuous(args) => runner::run_continuous(args).await,
+        Command::Iteration(args) => iteration::run(args).await,
         Command::Ls => crate::state::list_projects(),
         Command::Tasks {
             action: TasksAction::Edit,

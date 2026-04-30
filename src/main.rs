@@ -6,6 +6,7 @@ mod cli;
 mod commit;
 mod config;
 mod git;
+mod iteration;
 mod logger;
 mod prompt;
 mod runner;
