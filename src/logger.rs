@@ -83,13 +83,18 @@ impl LogSink {
     }
 
     fn print(&self, line: &str) {
-        let styled = if self.color {
-            colorize(line)
+        let raw = if self.bar.is_some() {
+            format!(" │ {line}")
         } else {
             line.to_string()
         };
+        let styled = if self.color {
+            colorize(line, &raw)
+        } else {
+            raw
+        };
         if let Some(bar) = &self.bar {
-            bar.println(format!("│ {styled}"));
+            bar.println(styled);
         } else {
             println!("{styled}");
         }
@@ -123,39 +128,71 @@ fn format_event(event: &AgentEvent) -> Option<String> {
     }
 }
 
-/// ANSI color the line based on its leading marker. Plain text falls
-/// through unchanged. The log.ndjson copy is unaffected — only the
-/// terminal-bound `print` path passes through this.
-fn colorize(line: &str) -> String {
-    if line.starts_with("═══") {
-        // major header: bold reverse cyan
-        format!("\x1b[1;7;36m {line} \x1b[0m")
-    } else if line.starts_with("──") {
-        // minor header (per-task iteration): bold cyan
-        format!("\x1b[1;36m{line}\x1b[0m")
-    } else if line.starts_with("=== task") {
-        // iteration-mode task header: bold reverse magenta
-        format!("\x1b[1;7;35m {line} \x1b[0m")
-    } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        format!("\x1b[1;32m{line}\x1b[0m") // bold green
-    } else if line.starts_with("✗") {
-        format!("\x1b[31m{line}\x1b[0m") // red
-    } else if line.starts_with("▶") {
-        format!("\x1b[34m{line}\x1b[0m") // blue
-    } else if line.starts_with("✓") {
-        format!("\x1b[2;32m{line}\x1b[0m") // dim green
-    } else if line.starts_with("(stop:") {
-        format!("\x1b[2;3m{line}\x1b[0m") // dim italic
-    } else if line.starts_with("kobito ")
+/// Muted dark theme using 24-bit color.
+///
+/// Two near-grey backgrounds split the stream:
+///
+/// - **kobito channel** (#191e2a, slightly cool slate) — everything
+///   kobito itself emits: start banner, iteration / task boundaries,
+///   commit landed, tokens / summary, sentinel notices.
+/// - **agent stream** (#121316, near-black) — the agent's own
+///   message text and tool calls.
+///
+/// Within each channel only the foreground tone changes — no extra
+/// hues. A muted maroon (#32161a) is the lone exception, reserved
+/// for failures and cancellation.
+///
+/// Routed only through the terminal `print` path; `log.ndjson` and
+/// `events.ndjson` get the plain string.
+fn colorize(judge: &str, full: &str) -> String {
+    let (bg, fg, bold) = section_for(judge);
+    let mut codes = bg.to_string();
+    if let Some(fg) = fg {
+        codes.push(';');
+        codes.push_str(fg);
+    }
+    if bold {
+        codes.push_str(";1");
+    }
+    format!("\x1b[{codes}m{full}\x1b[K\x1b[0m")
+}
+
+fn section_for(line: &str) -> (&'static str, Option<&'static str>, bool) {
+    // 24-bit truecolor: 48;2;<r>;<g>;<b> for BG, 38;2;... for FG.
+    // Two BGs + one accent BG. Three FG tones.
+    const KOBITO_BG: &str = "48;2;25;30;42"; // cool slate
+    const KOBITO_FG_BRIGHT: &str = "38;2;180;200;225";
+    const KOBITO_FG_MID: &str = "38;2;130;150;180";
+    const BODY_BG: &str = "48;2;18;19;22"; // near-black
+    const BODY_FG_DIM: &str = "38;2;90;95;105";
+    const ERROR_BG: &str = "48;2;50;22;26"; // muted maroon
+    const ERROR_FG: &str = "38;2;200;165;170";
+
+    if line.starts_with("kobito start")
+        || line.starts_with("kobito resume")
         || line.starts_with("project:")
-        || line.starts_with("done")
+        || line.starts_with("═══")
+        || line.starts_with("──")
+        || line.starts_with("=== task")
+        || line.starts_with("✓ committed")
+        || line.starts_with("✓ PR")
+    {
+        // major header — kobito BG, bright FG, bold
+        (KOBITO_BG, Some(KOBITO_FG_BRIGHT), true)
+    } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
-        || line.starts_with("interrupting")
-        || line.starts_with("interrupted")
     {
-        format!("\x1b[2m{line}\x1b[0m") // dim
+        // summary / tokens / sentinel — kobito BG, mid FG
+        (KOBITO_BG, Some(KOBITO_FG_MID), false)
+    } else if line.starts_with("✗") || line.starts_with("interrupting") {
+        // error / cancellation — muted maroon
+        (ERROR_BG, Some(ERROR_FG), true)
+    } else if line.starts_with("▶") {
+        // tool call — body BG, dim FG
+        (BODY_BG, Some(BODY_FG_DIM), false)
     } else {
-        line.to_string()
+        // agent body — body BG only, terminal default FG
+        (BODY_BG, None, false)
     }
 }
