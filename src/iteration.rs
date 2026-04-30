@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::IterationArgs;
-use crate::{agent, commit, git, logger::LogSink, preset, prompt, state, tasks::Backlog, ui};
+use crate::{
+    agent, branch, commit, git, logger::LogSink, preset, prompt, state, tasks::Backlog, ui,
+};
 
 pub async fn run(args: IterationArgs) -> Result<()> {
+    let agent_impl = agent::from_name(&args.agent)?;
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
@@ -65,8 +68,13 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             break;
         }
         let task_idx = n + 1;
-        let slug = slug::slugify(body).chars().take(40).collect::<String>();
-        let branch = format!("kobito/task-{task_idx}-{slug}");
+        let suggested = branch::suggest(&*agent_impl, &repo, body)
+            .await
+            .unwrap_or_else(|_| {
+                let slug = slug::slugify(body).chars().take(40).collect::<String>();
+                format!("kobito/task-{task_idx}-{slug}")
+            });
+        let branch = format!("{}-task-{task_idx}", suggested);
 
         if let Err(e) = git::checkout(&repo, &starting_branch) {
             bar.println(format!("✗ failed to return to {starting_branch}: {e}"));
@@ -110,14 +118,16 @@ pub async fn run(args: IterationArgs) -> Result<()> {
             let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
-            match agent::invoke_claude(&repo, &prompt_body, &sink).await {
+            match agent::run(&*agent_impl, &repo, &prompt_body, &sink).await {
                 Ok(out) => {
                     consecutive_failures = 0;
                     git::stage_all(&repo)?;
                     if git::has_staged_changes(&repo)? {
                         let diff = git::diff_staged(&repo)?;
                         let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                        let msg = commit::generate_message(&repo, &diff, body, &style).await?;
+                        let msg =
+                            commit::generate_message(&*agent_impl, &repo, &diff, body, &style)
+                                .await?;
                         git::commit(&repo, &msg)?;
                         sink.note(&format!(
                             "✓ committed: {}",

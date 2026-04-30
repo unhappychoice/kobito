@@ -64,7 +64,7 @@ pub struct IterationArgs {
     #[arg(long, default_value_t = 3)]
     pub max_failures: u32,
 
-    /// Agent backend (currently only `claude`).
+    /// Agent backend: `claude` (alias `claude-code`) or `codex`.
     #[arg(long, default_value = "claude")]
     pub agent: String,
 
@@ -99,7 +99,7 @@ pub struct ContinuousArgs {
     #[arg(long, default_value_t = 3)]
     pub max_failures: u32,
 
-    /// Agent backend (currently only `claude`).
+    /// Agent backend: `claude` (alias `claude-code`) or `codex`.
     #[arg(long, default_value = "claude")]
     pub agent: String,
 

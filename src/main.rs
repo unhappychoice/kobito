@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 
 mod agent;
+mod branch;
 mod cli;
 mod commit;
 mod git;
