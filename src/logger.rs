@@ -128,21 +128,28 @@ fn format_event(event: &AgentEvent) -> Option<String> {
     }
 }
 
-/// Dark theme. Body text gets a single dark grey BG so the kobito
-/// log channel is visually distinct from anything else in the
-/// terminal; section headers (Kobito Start / Iteration / Task /
-/// Commit / Summary / Error) get a deeper saturated BG with a
-/// matching FG so they cut the stream into scannable chunks.
+/// Muted dark theme using 24-bit color.
+///
+/// Two near-grey backgrounds split the stream:
+///
+/// - **kobito channel** (#191e2a, slightly cool slate) — everything
+///   kobito itself emits: start banner, iteration / task boundaries,
+///   commit landed, tokens / summary, sentinel notices.
+/// - **agent stream** (#121316, near-black) — the agent's own
+///   message text and tool calls.
+///
+/// Within each channel only the foreground tone changes — no extra
+/// hues. A muted maroon (#32161a) is the lone exception, reserved
+/// for failures and cancellation.
 ///
 /// Routed only through the terminal `print` path; `log.ndjson` and
 /// `events.ndjson` get the plain string.
 fn colorize(judge: &str, full: &str) -> String {
-    // ANSI 256-color palette. fg=None means "keep terminal default".
-    // \x1b[K paints the BG out to the end of the line.
     let (bg, fg, bold) = section_for(judge);
-    let mut codes = format!("48;5;{bg}");
+    let mut codes = bg.to_string();
     if let Some(fg) = fg {
-        codes.push_str(&format!(";38;5;{fg}"));
+        codes.push(';');
+        codes.push_str(fg);
     }
     if bold {
         codes.push_str(";1");
@@ -150,41 +157,42 @@ fn colorize(judge: &str, full: &str) -> String {
     format!("\x1b[{codes}m{full}\x1b[K\x1b[0m")
 }
 
-fn section_for(line: &str) -> (u8, Option<u8>, bool) {
-    // Two backgrounds: deep desaturated blue 17 for everything
-    // kobito itself emits, neutral slate 234 for the agent stream.
-    // Red 52 only for failures. Within the blue channel the
-    // foreground tone separates header weight from supporting
-    // metadata; bold only on the major boundaries.
+fn section_for(line: &str) -> (&'static str, Option<&'static str>, bool) {
+    // 24-bit truecolor: 48;2;<r>;<g>;<b> for BG, 38;2;... for FG.
+    // Two BGs + one accent BG. Three FG tones.
+    const KOBITO_BG: &str = "48;2;25;30;42"; // cool slate
+    const KOBITO_FG_BRIGHT: &str = "38;2;180;200;225";
+    const KOBITO_FG_MID: &str = "38;2;130;150;180";
+    const BODY_BG: &str = "48;2;18;19;22"; // near-black
+    const BODY_FG_DIM: &str = "38;2;90;95;105";
+    const ERROR_BG: &str = "48;2;50;22;26"; // muted maroon
+    const ERROR_FG: &str = "38;2;200;165;170";
+
     if line.starts_with("kobito start")
         || line.starts_with("kobito resume")
         || line.starts_with("project:")
-    {
-        // run begins — kobito blue, brightest FG, bold
-        (17, Some(153), true)
-    } else if line.starts_with("═══")
+        || line.starts_with("═══")
         || line.starts_with("──")
         || line.starts_with("=== task")
+        || line.starts_with("✓ committed")
+        || line.starts_with("✓ PR")
     {
-        // iteration / task boundary — kobito blue, mid FG, bold
-        (17, Some(117), true)
-    } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        // commit / PR landed — kobito blue, brightest FG, bold
-        (17, Some(153), true)
+        // major header — kobito BG, bright FG, bold
+        (KOBITO_BG, Some(KOBITO_FG_BRIGHT), true)
     } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
     {
-        // summary / tokens / sentinel — kobito blue, mid FG, no bold
-        (17, Some(117), false)
+        // summary / tokens / sentinel — kobito BG, mid FG
+        (KOBITO_BG, Some(KOBITO_FG_MID), false)
     } else if line.starts_with("✗") || line.starts_with("interrupting") {
-        // error / cancellation — red
-        (52, Some(210), true)
+        // error / cancellation — muted maroon
+        (ERROR_BG, Some(ERROR_FG), true)
     } else if line.starts_with("▶") {
-        // tool call — neutral slate, dimmest FG
-        (234, Some(240), false)
+        // tool call — body BG, dim FG
+        (BODY_BG, Some(BODY_FG_DIM), false)
     } else {
-        // agent body — neutral slate, default FG
-        (234, None, false)
+        // agent body — body BG only, terminal default FG
+        (BODY_BG, None, false)
     }
 }
