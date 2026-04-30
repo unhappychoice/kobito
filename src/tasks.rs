@@ -19,8 +19,7 @@ pub struct Backlog {
 
 impl Backlog {
     pub fn from_file(path: &Path) -> Result<Self> {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         Ok(Self::parse(&raw))
     }
 

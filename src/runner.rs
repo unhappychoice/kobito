@@ -184,7 +184,13 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
             args.sink.note("interrupted by user");
             break;
         }
-        ui::set_status(args.bar, iteration, started.elapsed(), total_retries, "thinking");
+        ui::set_status(
+            args.bar,
+            iteration,
+            started.elapsed(),
+            total_retries,
+            "thinking",
+        );
 
         let notes = fs::read_to_string(state::notes_path(args.run)).ok();
         let parts = prompt::PromptParts {
@@ -206,7 +212,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 }
                 git::stage_all(args.repo)?;
                 if !git::has_staged_changes(args.repo)? {
-                    args.sink.note("iteration produced no diff — skipping commit");
+                    args.sink
+                        .note("iteration produced no diff — skipping commit");
                     continue;
                 }
                 ui::set_status(
@@ -218,9 +225,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 );
                 let diff = git::diff_staged(args.repo)?;
                 let style = git::recent_commit_messages(args.repo, 20).unwrap_or_default();
-                let msg =
-                    commit::generate_message(args.agent, args.repo, &diff, args.goal, &style)
-                        .await?;
+                let msg = commit::generate_message(args.agent, args.repo, &diff, args.goal, &style)
+                    .await?;
                 git::commit(args.repo, &msg)?;
                 args.sink
                     .note(&format!("✓ committed: {}", first_line(&msg)));
@@ -251,8 +257,7 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                     ));
                     break;
                 }
-                let backoff =
-                    std::time::Duration::from_secs(2u64.pow(consecutive_failures));
+                let backoff = std::time::Duration::from_secs(2u64.pow(consecutive_failures));
                 tokio::time::sleep(backoff).await;
             }
         }
@@ -283,7 +288,10 @@ fn pick_run_to_resume(project: &state::ProjectPaths) -> Result<String> {
     let labels: Vec<String> = recent
         .iter()
         .map(|r| {
-            let goal = first_line(&r.meta.goal).chars().take(60).collect::<String>();
+            let goal = first_line(&r.meta.goal)
+                .chars()
+                .take(60)
+                .collect::<String>();
             format!("{}  [{}]  {goal}", r.id, r.meta.branch)
         })
         .collect();

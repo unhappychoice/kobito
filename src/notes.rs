@@ -51,7 +51,7 @@ fn excerpt(s: &str, max: usize) -> String {
 fn clean(raw: &str) -> String {
     let mut s = raw.trim().to_string();
     if s.starts_with("```") {
-        let after = s.splitn(2, '\n').nth(1).unwrap_or("").to_string();
+        let after = s.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
         s = after.trim_end_matches("```").trim().to_string();
     }
     s

@@ -32,10 +32,10 @@ pub struct RunMeta {
 }
 
 pub fn state_root() -> PathBuf {
-    if let Ok(custom) = std::env::var("XDG_STATE_HOME") {
-        if !custom.is_empty() {
-            return PathBuf::from(custom).join("kobito");
-        }
+    if let Ok(custom) = std::env::var("XDG_STATE_HOME")
+        && !custom.is_empty()
+    {
+        return PathBuf::from(custom).join("kobito");
     }
     dirs::home_dir()
         .map(|h| h.join(".local/state/kobito"))
@@ -53,7 +53,11 @@ pub fn project_id(repo_root: &Path, remote_url: Option<&str>) -> String {
     let mut hasher = Sha1::new();
     hasher.update(identity.as_bytes());
     let digest = hasher.finalize();
-    let short = digest.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+    let short = digest
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     format!("{basename}-{short}")
 }
 
@@ -91,8 +95,8 @@ pub fn read_run_meta(project: &ProjectPaths, run_id: &str) -> Result<(RunMeta, R
         bail!("run `{run_id}` not found in {}", project.root.display());
     }
     let meta_path = run_dir.join("meta.json");
-    let body = fs::read_to_string(&meta_path)
-        .with_context(|| format!("read {}", meta_path.display()))?;
+    let body =
+        fs::read_to_string(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
     let meta: RunMeta = serde_json::from_str(&body)?;
     let run = RunPaths {
         project: project.clone(),

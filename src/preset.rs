@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub fn config_root() -> PathBuf {
-    if let Ok(custom) = std::env::var("XDG_CONFIG_HOME") {
-        if !custom.is_empty() {
-            return PathBuf::from(custom).join("kobito");
-        }
+    if let Ok(custom) = std::env::var("XDG_CONFIG_HOME")
+        && !custom.is_empty()
+    {
+        return PathBuf::from(custom).join("kobito");
     }
     dirs::home_dir()
         .map(|h| h.join(".config/kobito"))
@@ -34,8 +34,7 @@ pub fn resolve(name: &str, repo: &Path) -> Result<PathBuf> {
 
 pub fn load(name: &str, repo: &Path, vars: &HashMap<String, String>) -> Result<String> {
     let path = resolve(name, repo)?;
-    let body =
-        fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let body = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     substitute(&body, vars)
 }
 
@@ -87,7 +86,10 @@ mod tests {
     use super::*;
 
     fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]

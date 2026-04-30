@@ -17,12 +17,12 @@ pub fn build_iteration_prompt(parts: &PromptParts) -> String {
         out.push_str("\n\n");
     }
 
-    if let Some(notes) = &parts.notes {
-        if !notes.trim().is_empty() {
-            out.push_str("## Cross-iteration notes\n\n");
-            out.push_str(notes.trim());
-            out.push_str("\n\n");
-        }
+    if let Some(notes) = &parts.notes
+        && !notes.trim().is_empty()
+    {
+        out.push_str("## Cross-iteration notes\n\n");
+        out.push_str(notes.trim());
+        out.push_str("\n\n");
     }
 
     out.push_str(&format!(
