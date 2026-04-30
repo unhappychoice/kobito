@@ -1,0 +1,16 @@
+[package]
+name = "kobito"
+version = "0.1.0"
+edition = "2024"
+description = "Autonomous coding agent orchestrator — works while you sleep, like the elves in the shoemaker's tale"
+license = "ISC"
+repository = "https://github.com/unhappychoice/kobito"
+
+[[bin]]
+name = "kobito"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
