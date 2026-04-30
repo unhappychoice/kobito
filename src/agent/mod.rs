@@ -15,12 +15,13 @@ pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
     fn build_streaming_command(&self, prompt: &str) -> tokio::process::Command;
     fn build_oneshot_command(&self, prompt: &str) -> tokio::process::Command;
-    fn parse_event(&self, line: &str) -> AgentEvent;
+    /// One stdout line may produce zero, one, or several events.
+    fn parse_event(&self, line: &str) -> Vec<AgentEvent>;
 }
 
 pub fn from_name(name: &str) -> Result<Box<dyn Agent>> {
     match name {
-        "claude" | "claude-code" => Ok(Box::new(claude_code::ClaudeCode)),
+        "claude" | "claude-code" => Ok(Box::new(claude_code::ClaudeCode::new())),
         "codex" => Ok(Box::new(codex::Codex)),
         other => bail!("unknown agent `{other}` — supported: claude, claude-code, codex"),
     }
