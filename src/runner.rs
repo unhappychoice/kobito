@@ -42,9 +42,9 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     );
     git::create_and_checkout(&repo, &branch)?;
 
-    state::write_current_run(
-        &project,
-        &state::CurrentRun {
+    state::write_run_meta(
+        &run,
+        &state::RunMeta {
             run_id: run.timestamp.clone(),
             started_at: Utc::now().to_rfc3339(),
             branch: branch.clone(),
@@ -142,7 +142,6 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     }
 
     bar.finish_and_clear();
-    state::clear_current_run(&project)?;
     sink.note(&format!(
         "done — {completed} commits on {branch} (run dir: {})",
         run.run_dir.display()
