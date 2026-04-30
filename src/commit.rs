@@ -49,11 +49,13 @@ pub async fn generate_message(
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    let total = s.chars().count();
+    if total <= max {
         return s.to_string();
     }
-    let head = &s[..max / 2];
-    let tail = &s[s.len() - max / 2..];
+    let keep = max / 2;
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(total - keep).collect();
     format!("{head}\n…\n[diff truncated]\n…\n{tail}")
 }
 
@@ -102,6 +104,17 @@ mod tests {
         assert!(out.ends_with(&"T".repeat(10)));
         assert!(out.contains("[diff truncated]"));
         assert!(!out.contains("MIDDLE"));
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_chars_without_panic() {
+        let head = "あ".repeat(100);
+        let tail = "い".repeat(100);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = truncate(&input, 20);
+        assert!(out.starts_with(&"あ".repeat(10)));
+        assert!(out.ends_with(&"い".repeat(10)));
+        assert!(out.contains("[diff truncated]"));
     }
 
     #[test]
