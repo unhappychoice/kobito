@@ -41,17 +41,18 @@ pub async fn run_streamed(
     let mut usage = Usage::default();
     let mut reader = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = reader.next_line().await {
-        let event = agent.parse_event(&line);
-        sink.event(&line, &event);
-        match &event {
-            AgentEvent::Message(text) => {
-                accumulated.push_str(text);
-                accumulated.push('\n');
+        for event in agent.parse_event(&line) {
+            sink.event(&line, &event);
+            match &event {
+                AgentEvent::Message(text) => {
+                    accumulated.push_str(text);
+                    accumulated.push('\n');
+                }
+                AgentEvent::Usage(u) => {
+                    usage = *u;
+                }
+                _ => {}
             }
-            AgentEvent::Usage(u) => {
-                usage = *u;
-            }
-            _ => {}
         }
     }
 
