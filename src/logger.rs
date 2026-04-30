@@ -110,11 +110,13 @@ fn format_event(event: &AgentEvent) -> Option<String> {
             Some(s) => format!("▶ {tool}: {s}"),
             None => format!("▶ {tool}"),
         }),
-        AgentEvent::ToolEnd { tool, ok } => Some(if *ok {
-            format!("✓ {tool}")
-        } else {
-            format!("✗ {tool}")
-        }),
+        AgentEvent::ToolEnd { tool, ok } => {
+            if *ok {
+                None
+            } else {
+                Some(format!("✗ {tool}"))
+            }
+        }
         AgentEvent::Stop { reason } => Some(format!("(stop: {reason})")),
         AgentEvent::Usage(_) => None,
         AgentEvent::Other(_) => None,
