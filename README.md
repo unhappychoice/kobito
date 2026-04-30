@@ -97,10 +97,17 @@ Resolution checks (1) first, then (2). Missing preset → error.
 # ~/.config/kobito/presets/coverage.md
 # Increase test coverage for {{path}}. Aim for {{target}}% line coverage.
 
+# preset replaces --prompt entirely:
 kobito continuous --preset coverage --var path=src/api --var target=80
 ```
 
-The resolved body is prepended to the iteration prompt, above the goal / task block.
+In `continuous` mode `--preset` is **mutually exclusive with `--prompt`** — the resolved preset body becomes the goal.
+
+In `iteration` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
+
+```sh
+kobito iteration --preset small-feature --backlog tasks.md
+```
 
 ### Common options
 

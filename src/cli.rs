@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::{iteration, runner};
@@ -74,13 +74,16 @@ pub struct IterationArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(group = ArgGroup::new("goal").required(true).multiple(false).args(["prompt", "preset"]))]
 pub struct ContinuousArgs {
     /// The goal to pursue, e.g. "Increase test coverage in src/".
+    /// Mutually exclusive with --preset.
     #[arg(short, long)]
-    pub prompt: String,
+    pub prompt: Option<String>,
 
-    /// Compose a preset above the prompt. Looks up
-    /// .kobito/presets/<name>.md (project) then $XDG_CONFIG_HOME/kobito/presets/<name>.md.
+    /// Use a preset (with --var substitution) as the goal.
+    /// Looks up .kobito/presets/<name>.md (project) then
+    /// $XDG_CONFIG_HOME/kobito/presets/<name>.md. Mutually exclusive with --prompt.
     #[arg(long)]
     pub preset: Option<String>,
 
