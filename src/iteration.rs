@@ -111,10 +111,11 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 consecutive_failures,
                 &format!("task {}/{}", task_idx, pending.len()),
             );
+            let notes = std::fs::read_to_string(state::notes_path(&run_dirs)).ok();
             let parts = prompt::PromptParts {
                 goal: body.clone(),
                 iteration,
-                notes: None,
+                notes,
                 preset: preset_body.clone(),
             };
             let prompt_body = prompt::build_task_prompt(&parts, body);
