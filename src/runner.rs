@@ -6,16 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::ContinuousArgs;
-use crate::{agent, commit, config, git, logger::LogSink, prompt, state, ui};
+use crate::{agent, commit, git, logger::LogSink, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
     }
-
-    let project_cfg = config::load(&repo)?;
-    let language = config::resolve_language(args.language.as_deref(), &project_cfg);
 
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
@@ -50,10 +47,9 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     }
 
     sink.note(&format!("kobito start: {}", args.prompt));
-    sink.note(&format!("project: {id}  branch: {branch}  language: {language}"));
+    sink.note(&format!("project: {id}  branch: {branch}"));
 
     let started = Instant::now();
-    let (agents_md, claude_md) = prompt::read_repo_docs(&repo);
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -67,14 +63,11 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
 
         let notes = fs::read_to_string(state::notes_path(&project)).ok();
         let parts = prompt::PromptParts {
-            agents_md: agents_md.clone(),
-            claude_md: claude_md.clone(),
-            language: language.clone(),
             goal: args.prompt.clone(),
             iteration,
             notes,
         };
-        let body = prompt::build_iteration_prompt(&parts, &args.agent);
+        let body = prompt::build_iteration_prompt(&parts);
         prompt::save_prompt(&run.prompts_dir, iteration, &body)?;
 
         let outcome = match args.agent.as_str() {
@@ -97,8 +90,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
                 ui::set_status(&bar, iteration, started.elapsed(), total_retries, "committing");
                 let diff = git::diff_staged(&repo)?;
                 let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                let msg = commit::generate_message(&repo, &diff, &args.prompt, &style, &language)
-                    .await?;
+                let msg = commit::generate_message(&repo, &diff, &args.prompt, &style).await?;
                 git::commit(&repo, &msg)?;
                 sink.note(&format!("✓ committed: {}", first_line(&msg)));
                 completed += 1;

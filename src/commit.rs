@@ -11,7 +11,6 @@ pub async fn generate_message(
     diff: &str,
     iteration_goal: &str,
     style_examples: &[String],
-    language: &str,
 ) -> Result<String> {
     let trimmed = truncate(diff, MAX_DIFF_CHARS);
     let style_block = if style_examples.is_empty() {
@@ -35,7 +34,6 @@ pub async fn generate_message(
          - Subject in imperative mood, no trailing period, no longer than 72 chars.\n\
          - Optional body explaining the why, separated by a blank line.\n\
          - No \"Co-authored-by\" or signature lines.\n\
-         - Write everything in {language}.\n\
          - Output ONLY the commit message — no markdown fences, no preamble, no explanation.\n\
          {style_block}\n\
          ## Iteration goal\n\n{iteration_goal}\n\n\

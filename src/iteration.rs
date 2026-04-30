@@ -6,16 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::IterationArgs;
-use crate::{agent, commit, config, git, logger::LogSink, prompt, state, tasks::Backlog, ui};
+use crate::{agent, commit, git, logger::LogSink, prompt, state, tasks::Backlog, ui};
 
 pub async fn run(args: IterationArgs) -> Result<()> {
     let repo = git::repo_root()?;
     if !args.allow_dirty {
         git::ensure_clean(&repo)?;
     }
-
-    let project_cfg = config::load(&repo)?;
-    let language = config::resolve_language(args.language.as_deref(), &project_cfg);
 
     let remote = git::remote_url(&repo);
     let id = state::project_id(&repo, remote.as_deref());
@@ -49,8 +46,6 @@ pub async fn run(args: IterationArgs) -> Result<()> {
         let f = cancelled.clone();
         let _ = ctrlc::set_handler(move || f.store(true, Ordering::SeqCst));
     }
-
-    let (agents_md, claude_md) = prompt::read_repo_docs(&repo);
 
     for (n, (line_no, body)) in pending.iter().enumerate() {
         if cancelled.load(Ordering::SeqCst) {
@@ -94,14 +89,11 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 &format!("task {}/{}", task_idx, pending.len()),
             );
             let parts = prompt::PromptParts {
-                agents_md: agents_md.clone(),
-                claude_md: claude_md.clone(),
-                language: language.clone(),
                 goal: body.clone(),
                 iteration,
                 notes: None,
             };
-            let prompt_body = prompt::build_task_prompt(&parts, &args.agent, body);
+            let prompt_body = prompt::build_task_prompt(&parts, body);
             prompt::save_prompt(&run_dirs.prompts_dir, iteration, &prompt_body)?;
 
             match agent::invoke_claude(&repo, &prompt_body, &sink).await {
@@ -111,8 +103,7 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     if git::has_staged_changes(&repo)? {
                         let diff = git::diff_staged(&repo)?;
                         let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
-                        let msg = commit::generate_message(&repo, &diff, body, &style, &language)
-                            .await?;
+                        let msg = commit::generate_message(&repo, &diff, body, &style).await?;
                         git::commit(&repo, &msg)?;
                         sink.note(&format!(
                             "✓ committed: {}",

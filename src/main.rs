@@ -4,7 +4,6 @@ use clap::Parser;
 mod agent;
 mod cli;
 mod commit;
-mod config;
 mod git;
 mod iteration;
 mod logger;

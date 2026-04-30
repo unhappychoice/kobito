@@ -3,42 +3,13 @@ use std::fs;
 use std::path::Path;
 
 pub struct PromptParts {
-    pub agents_md: Option<String>,
-    pub claude_md: Option<String>,
-    pub language: String,
     pub goal: String,
     pub iteration: u32,
     pub notes: Option<String>,
 }
 
-pub fn read_repo_docs(repo: &Path) -> (Option<String>, Option<String>) {
-    let agents = fs::read_to_string(repo.join("AGENTS.md")).ok();
-    let claude = fs::read_to_string(repo.join("CLAUDE.md")).ok();
-    (agents, claude)
-}
-
-pub fn build_iteration_prompt(parts: &PromptParts, agent: &str) -> String {
+pub fn build_iteration_prompt(parts: &PromptParts) -> String {
     let mut out = String::new();
-
-    out.push_str(&format!(
-        "# Project conventions\n\nOutput all code, comments, and commit messages in {}.\n\n",
-        parts.language
-    ));
-
-    if let Some(md) = &parts.agents_md {
-        out.push_str("## AGENTS.md\n\n");
-        out.push_str(md.trim());
-        out.push_str("\n\n");
-    }
-
-    // Claude Code already auto-reads CLAUDE.md, so don't double-inject for `claude`.
-    if agent != "claude" {
-        if let Some(md) = &parts.claude_md {
-            out.push_str("## CLAUDE.md\n\n");
-            out.push_str(md.trim());
-            out.push_str("\n\n");
-        }
-    }
 
     if let Some(notes) = &parts.notes {
         if !notes.trim().is_empty() {
@@ -62,27 +33,8 @@ pub fn build_iteration_prompt(parts: &PromptParts, agent: &str) -> String {
     out
 }
 
-pub fn build_task_prompt(parts: &PromptParts, agent: &str, task_body: &str) -> String {
+pub fn build_task_prompt(parts: &PromptParts, task_body: &str) -> String {
     let mut out = String::new();
-
-    out.push_str(&format!(
-        "# Project conventions\n\nOutput all code, comments, and commit messages in {}.\n\n",
-        parts.language
-    ));
-
-    if let Some(md) = &parts.agents_md {
-        out.push_str("## AGENTS.md\n\n");
-        out.push_str(md.trim());
-        out.push_str("\n\n");
-    }
-
-    if agent != "claude" {
-        if let Some(md) = &parts.claude_md {
-            out.push_str("## CLAUDE.md\n\n");
-            out.push_str(md.trim());
-            out.push_str("\n\n");
-        }
-    }
 
     out.push_str(&format!(
         "## Single task\n\n{}\n\n## Iteration {}\n\n",
