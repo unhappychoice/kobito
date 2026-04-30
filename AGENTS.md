@@ -18,7 +18,7 @@ An autonomous coding agent orchestrator. Spawns `claude` or `codex` CLI in a loo
 |---|---|
 | `src/main.rs` | entry point — `mod` declarations only |
 | `src/cli.rs` | clap definitions + dispatch |
-| `src/agent/` | `Agent` trait + per-agent modules (`claude_code`, `codex`) and shared `stream` helper |
+| `src/agent/` | `Agent` trait + per-agent modules (`claude_code`, `codex`), shared `stream` helper, and the normalised `AgentEvent` / `Usage` types in `event.rs` |
 | `src/runner.rs` | `cont` mode loop + `resume` |
 | `src/iteration.rs` | `iter` mode loop |
 | `src/state.rs` | XDG state directory layout |
@@ -27,7 +27,7 @@ An autonomous coding agent orchestrator. Spawns `claude` or `codex` CLI in a loo
 | `src/branch.rs` | agent-driven branch name suggestion |
 | `src/commit.rs` | agent-driven commit message generation |
 | `src/git.rs` | `git` CLI wrapper |
-| `src/logger.rs` | `LogSink` — terminal passthrough + ndjson |
+| `src/logger.rs` | `LogSink` — terminal passthrough + per-run `log.ndjson` (human-readable lines) and `events.ndjson` (raw `AgentEvent` JSON) |
 | `src/ui.rs` | indicatif status bar |
 | `src/prompt.rs` | iteration / task prompt builders |
 | `src/tasks.rs` | `tasks.md` parser |

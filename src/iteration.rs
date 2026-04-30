@@ -153,7 +153,13 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     } else {
                         sink.note("no diff this iteration");
                     }
-                    if out.stdout.contains("TASK_COMPLETE") {
+                    sink.note(&format!(
+                        "  tokens — in {} · out {} · cached {}",
+                        out.usage.input_tokens,
+                        out.usage.output_tokens,
+                        out.usage.cached_input_tokens,
+                    ));
+                    if out.task_complete {
                         sink.note("agent reported TASK_COMPLETE");
                         completed = true;
                         break;

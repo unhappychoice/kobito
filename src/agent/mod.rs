@@ -5,14 +5,17 @@ use crate::logger::LogSink;
 
 mod claude_code;
 mod codex;
+mod event;
 mod stream;
 
+pub use event::{AgentEvent, Usage};
 pub use stream::AgentOutcome;
 
 pub trait Agent: Send + Sync {
     fn name(&self) -> &str;
     fn build_streaming_command(&self, prompt: &str) -> tokio::process::Command;
     fn build_oneshot_command(&self, prompt: &str) -> tokio::process::Command;
+    fn parse_event(&self, line: &str) -> AgentEvent;
 }
 
 pub fn from_name(name: &str) -> Result<Box<dyn Agent>> {
@@ -31,7 +34,7 @@ pub async fn run(
 ) -> Result<AgentOutcome> {
     let mut cmd = agent.build_streaming_command(prompt);
     cmd.current_dir(repo);
-    stream::run_streamed(cmd, agent.name(), sink).await
+    stream::run_streamed(cmd, agent, sink).await
 }
 
 pub async fn run_oneshot(agent: &dyn Agent, repo: &Path, prompt: &str) -> Result<String> {
