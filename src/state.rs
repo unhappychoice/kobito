@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -22,8 +22,8 @@ pub struct RunPaths {
     pub timestamp: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CurrentRun {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMeta {
     pub run_id: String,
     pub started_at: String,
     pub branch: String,
@@ -79,22 +79,59 @@ pub fn new_run(project: ProjectPaths) -> Result<RunPaths> {
     })
 }
 
-pub fn write_current_run(project: &ProjectPaths, run: &CurrentRun) -> Result<()> {
-    let path = project.root.join("current-run.json");
-    fs::write(path, serde_json::to_string_pretty(run)?)?;
+pub fn write_run_meta(run: &RunPaths, meta: &RunMeta) -> Result<()> {
+    let path = run.run_dir.join("meta.json");
+    fs::write(path, serde_json::to_string_pretty(meta)?)?;
     Ok(())
 }
 
-pub fn clear_current_run(project: &ProjectPaths) -> Result<()> {
-    let path = project.root.join("current-run.json");
-    if path.exists() {
-        fs::remove_file(path)?;
+pub fn read_run_meta(project: &ProjectPaths, run_id: &str) -> Result<(RunMeta, RunPaths)> {
+    let run_dir = project.root.join("runs").join(run_id);
+    if !run_dir.exists() {
+        bail!("run `{run_id}` not found in {}", project.root.display());
     }
-    Ok(())
+    let meta_path = run_dir.join("meta.json");
+    let body = fs::read_to_string(&meta_path)
+        .with_context(|| format!("read {}", meta_path.display()))?;
+    let meta: RunMeta = serde_json::from_str(&body)?;
+    let run = RunPaths {
+        project: project.clone(),
+        run_dir: run_dir.clone(),
+        log_file: run_dir.join("log.ndjson"),
+        prompts_dir: run_dir.join("prompts"),
+        timestamp: run_id.to_string(),
+    };
+    Ok((meta, run))
 }
 
-pub fn notes_path(project: &ProjectPaths) -> PathBuf {
-    project.root.join("notes.md")
+#[derive(Debug, Clone)]
+pub struct RunSummary {
+    pub id: String,
+    pub meta: RunMeta,
+}
+
+pub fn recent_runs(project: &ProjectPaths, limit: usize) -> Result<Vec<RunSummary>> {
+    let runs = project.root.join("runs");
+    if !runs.exists() {
+        return Ok(vec![]);
+    }
+    let mut summaries: Vec<RunSummary> = fs::read_dir(&runs)?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().to_string();
+            let body = fs::read_to_string(e.path().join("meta.json")).ok()?;
+            let meta: RunMeta = serde_json::from_str(&body).ok()?;
+            Some(RunSummary { id, meta })
+        })
+        .collect();
+    summaries.sort_by(|a, b| b.id.cmp(&a.id));
+    summaries.truncate(limit);
+    Ok(summaries)
+}
+
+pub fn notes_path(run: &RunPaths) -> PathBuf {
+    run.run_dir.join("notes.md")
 }
 
 pub fn tasks_path(project: &ProjectPaths) -> PathBuf {

@@ -25,8 +25,8 @@ pub enum Command {
     Ls,
     /// Replay the last run's log for a project.
     Log { project: Option<String> },
-    /// Resume iteration mode from where it stopped.
-    Resume { project: Option<String> },
+    /// Resume a previous continuous run (interactive picker, or --run <id>).
+    Resume(ResumeArgs),
     /// Manage the iteration backlog.
     Tasks {
         #[command(subcommand)]
@@ -38,6 +38,27 @@ pub enum Command {
 pub enum TasksAction {
     /// Open $EDITOR on the state copy of tasks.md.
     Edit,
+}
+
+#[derive(Parser, Debug)]
+pub struct ResumeArgs {
+    /// Run id to resume (timestamp directory name). If omitted, an
+    /// interactive picker shows the 10 most recent runs (auto-picks the
+    /// only one when there's just one, or in non-interactive shells).
+    #[arg(long)]
+    pub run: Option<String>,
+
+    /// Maximum iterations before exiting.
+    #[arg(long, default_value_t = 50)]
+    pub max_iterations: u32,
+
+    /// Maximum consecutive failures before giving up.
+    #[arg(long, default_value_t = 3)]
+    pub max_failures: u32,
+
+    /// Skip the clean-tree check (dangerous).
+    #[arg(long)]
+    pub allow_dirty: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -112,13 +133,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Continuous(args) => runner::run_continuous(args).await,
         Command::Iteration(args) => iteration::run(args).await,
+        Command::Resume(args) => runner::resume_continuous(args).await,
         Command::Ls => crate::state::list_projects(),
         Command::Tasks {
             action: TasksAction::Edit,
         } => edit_tasks(),
-        Command::Log { .. } | Command::Resume { .. } => {
-            bail!("not yet implemented — tracked in #6")
-        }
+        Command::Log { .. } => bail!("not yet implemented"),
     }
 }
 

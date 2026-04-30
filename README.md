@@ -129,14 +129,47 @@ kobito iteration --preset small-feature --backlog tasks.md
 ~/.local/state/kobito/
 └── projects/
     └── <repo-basename>-<sha1[:8]>/
-        ├── notes.md            # cross-iteration scratch memory (read-only to kobito today)
-        ├── current-run.json    # active run metadata
+        ├── tasks.md                # iteration backlog (state copy)
         └── runs/
-            └── 2026-05-01T12-00-00/
-                ├── log.ndjson  # streamed agent output
+            └── 2026-05-01T12-00-00/   # one directory per invocation = run id
+                ├── meta.json       # branch, goal, agent — used for resume
+                ├── notes.md        # cross-iteration learnings, agent-maintained
+                ├── log.ndjson      # streamed agent output
                 └── prompts/
                     └── iter-0001.md
 ```
+
+`notes.md` lives **per run**, not per project. Each invocation gets a
+fresh memory file, and iteration mode (which starts a new run per
+task) automatically gets a separate notes.md per task — coverage
+push and refactor learnings don't bleed into each other.
+
+After every commit, the agent is asked in a one-shot call to write
+1-5 short bullets distilling what is useful for the next iteration —
+surprising findings, dead-ends, paths or commands worth remembering —
+appended under a timestamped header. The next iteration reads the
+file back into the prompt as cross-iteration memory. Empty / `NO_NOTES`
+outputs are skipped.
+
+### Resuming
+
+```sh
+# interactive picker — shows the 10 most recent runs
+kobito resume
+
+# or resume a specific run id (the timestamp dir name)
+kobito resume --run 2026-05-01T12-00-00
+```
+
+`kobito resume` without `--run` opens an arrow-key picker listing the most
+recent runs (id, branch, first line of the goal). When there is only one
+prior run, or when stdin is not a TTY (CI, pipes), it auto-picks the
+latest.
+
+Resume re-uses the original branch and agent from the run's
+`meta.json`, opens a new run directory, and copies the previous
+`notes.md` as the starting memory so the loop picks up with what
+the earlier iterations learned.
 
 `$XDG_STATE_HOME` is honoured if set.
 
