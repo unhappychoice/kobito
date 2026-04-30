@@ -19,8 +19,8 @@ An autonomous coding agent orchestrator. Spawns `claude` or `codex` CLI in a loo
 | `src/main.rs` | entry point — `mod` declarations only |
 | `src/cli.rs` | clap definitions + dispatch |
 | `src/agent/` | `Agent` trait + per-agent modules (`claude_code`, `codex`) and shared `stream` helper |
-| `src/runner.rs` | `continuous` mode loop + `resume` |
-| `src/iteration.rs` | `iteration` mode loop |
+| `src/runner.rs` | `cont` mode loop + `resume` |
+| `src/iteration.rs` | `iter` mode loop |
 | `src/state.rs` | XDG state directory layout |
 | `src/preset.rs` | preset resolution + `{{var}}` substitution |
 | `src/notes.rs` | per-iteration learning generation |

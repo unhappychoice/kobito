@@ -18,16 +18,18 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a never-ending goal on a single branch with many commits.
-    Continuous(ContinuousArgs),
+    #[command(alias = "continuous")]
+    Cont(ContinuousArgs),
     /// Consume a tasks.md backlog, one branch + PR per task.
-    Iteration(IterationArgs),
+    #[command(alias = "iteration")]
+    Iter(IterationArgs),
     /// List all known projects with their last run.
     Ls,
     /// Replay the last run's log for a project.
     Log { project: Option<String> },
-    /// Resume a previous continuous run (interactive picker, or --run <id>).
+    /// Resume a previous cont run (interactive picker, or --run <id>).
     Resume(ResumeArgs),
-    /// Manage the iteration backlog.
+    /// Manage the iter backlog.
     Tasks {
         #[command(subcommand)]
         action: TasksAction,
@@ -131,8 +133,8 @@ pub struct ContinuousArgs {
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Continuous(args) => runner::run_continuous(args).await,
-        Command::Iteration(args) => iteration::run(args).await,
+        Command::Cont(args) => runner::run_continuous(args).await,
+        Command::Iter(args) => iteration::run(args).await,
         Command::Resume(args) => runner::resume_continuous(args).await,
         Command::Ls => crate::state::list_projects(),
         Command::Tasks {
