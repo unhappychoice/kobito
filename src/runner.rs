@@ -230,6 +230,8 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 git::commit(args.repo, &msg)?;
                 args.sink
                     .note(&format!("✓ committed: {}", first_line(&msg)));
+                args.sink
+                    .note(&format!("  tokens — {}", format_usage(&out.usage)));
                 completed += 1;
 
                 let notes_path = state::notes_path(args.run);
@@ -310,4 +312,23 @@ fn slugify(s: &str) -> String {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
+}
+
+fn format_usage(u: &crate::agent::Usage) -> String {
+    format!(
+        "in {} · out {} · cached {}",
+        format_count(u.input_tokens),
+        format_count(u.output_tokens),
+        format_count(u.cached_input_tokens),
+    )
+}
+
+fn format_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
