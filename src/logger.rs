@@ -83,13 +83,18 @@ impl LogSink {
     }
 
     fn print(&self, line: &str) {
-        let styled = if self.color {
-            colorize(line)
+        let raw = if self.bar.is_some() {
+            format!(" │ {line}")
         } else {
             line.to_string()
         };
+        let styled = if self.color {
+            colorize(line, &raw)
+        } else {
+            raw
+        };
         if let Some(bar) = &self.bar {
-            bar.println(format!("│ {styled}"));
+            bar.println(styled);
         } else {
             println!("{styled}");
         }
@@ -121,39 +126,52 @@ fn format_event(event: &AgentEvent) -> Option<String> {
     }
 }
 
-/// ANSI color the line based on its leading marker. Plain text falls
-/// through unchanged. The log.ndjson copy is unaffected — only the
-/// terminal-bound `print` path passes through this.
-fn colorize(line: &str) -> String {
-    if line.starts_with("═══") {
-        // major header: bold reverse cyan
-        format!("\x1b[1;7;36m {line} \x1b[0m")
-    } else if line.starts_with("──") {
-        // minor header (per-task iteration): bold cyan
-        format!("\x1b[1;36m{line}\x1b[0m")
+/// Dark theme. Body text gets a single dark grey BG so the kobito
+/// log channel is visually distinct from anything else in the
+/// terminal; section headers (Kobito Start / Iteration / Task /
+/// Commit / Summary / Error) get a deeper saturated BG with a
+/// matching FG so they cut the stream into scannable chunks.
+///
+/// Routed only through the terminal `print` path; `log.ndjson` and
+/// `events.ndjson` get the plain string.
+fn colorize(judge: &str, full: &str) -> String {
+    // ANSI 256-color palette. fg=None means "keep terminal default".
+    // \x1b[K paints the BG out to the end of the line.
+    let (bg, fg, bold) = section_for(judge);
+    let mut codes = format!("48;5;{bg}");
+    if let Some(fg) = fg {
+        codes.push_str(&format!(";38;5;{fg}"));
+    }
+    if bold {
+        codes.push_str(";1");
+    }
+    format!("\x1b[{codes}m{full}\x1b[K\x1b[0m")
+}
+
+fn section_for(line: &str) -> (u8, Option<u8>, bool) {
+    if line.starts_with("kobito start") || line.starts_with("kobito resume") {
+        // Kobito Start — deep violet
+        (53, Some(213), true)
+    } else if line.starts_with("═══") || line.starts_with("──") {
+        // Iteration boundary — twilight teal
+        (23, Some(159), true)
     } else if line.starts_with("=== task") {
-        // iteration-mode task header: bold reverse magenta
-        format!("\x1b[1;7;35m {line} \x1b[0m")
+        // Iteration-mode task header — burnished copper
+        (94, Some(223), true)
     } else if line.starts_with("✓ committed") || line.starts_with("✓ PR") {
-        format!("\x1b[1;32m{line}\x1b[0m") // bold green
-    } else if line.starts_with("✗") {
-        format!("\x1b[31m{line}\x1b[0m") // red
-    } else if line.starts_with("▶") {
-        format!("\x1b[34m{line}\x1b[0m") // blue
-    } else if line.starts_with("✓") {
-        format!("\x1b[2;32m{line}\x1b[0m") // dim green
-    } else if line.starts_with("(stop:") {
-        format!("\x1b[2;3m{line}\x1b[0m") // dim italic
-    } else if line.starts_with("kobito ")
-        || line.starts_with("project:")
-        || line.starts_with("done")
+        // Commit landed — moss
+        (22, Some(120), true)
+    } else if line.starts_with("done ")
         || line.starts_with("  tokens —")
         || line.starts_with("agent reported")
-        || line.starts_with("interrupting")
-        || line.starts_with("interrupted")
     {
-        format!("\x1b[2m{line}\x1b[0m") // dim
+        // Summary — gold-on-aubergine
+        (54, Some(222), false)
+    } else if line.starts_with("✗") || line.starts_with("interrupting") {
+        // Error / cancellation — blood
+        (52, Some(217), true)
     } else {
-        line.to_string()
+        // Body — dark slate, default fg
+        (234, None, false)
     }
 }
