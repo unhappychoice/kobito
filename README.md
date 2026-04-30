@@ -180,10 +180,6 @@ Each iteration:
 
 Single branch, single PR, many commits — by design (continuous mode). One branch + PR per task (iteration mode).
 
-## Contributing
-
-See [`AGENTS.md`](AGENTS.md).
-
 ## License
 
 ISC
