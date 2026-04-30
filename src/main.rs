@@ -8,6 +8,7 @@ mod config;
 mod git;
 mod logger;
 mod prompt;
+mod runner;
 mod state;
 mod ui;
 

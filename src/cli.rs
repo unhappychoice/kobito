@@ -1,6 +1,8 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
+use crate::runner;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "kobito",
@@ -64,10 +66,10 @@ pub struct ContinuousArgs {
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Continuous(args) => runner::run_continuous(args).await,
         Command::Ls => crate::state::list_projects(),
-        Command::Continuous(_)
-        | Command::Log { .. }
-        | Command::Resume { .. }
-        | Command::Tasks { .. } => bail!("not yet implemented"),
+        Command::Log { .. } | Command::Resume { .. } | Command::Tasks { .. } => {
+            bail!("not yet implemented — tracked in #3 / #6")
+        }
     }
 }
