@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::Agent;
 use crate::cli::{ContinuousArgs, ResumeArgs};
-use crate::{agent, branch, commit, git, logger::LogSink, notes, preset, prompt, state, ui};
+use crate::{agent, branch, commit, git, logger::LogSink, notes, pr, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let agent_impl = agent::from_name(&args.agent)?;
@@ -45,18 +45,16 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     );
     git::create_and_checkout(&repo, &branch)?;
 
-    state::write_run_meta(
-        &run,
-        &state::RunMeta {
-            run_id: run.timestamp.clone(),
-            started_at: Utc::now().to_rfc3339(),
-            branch: branch.clone(),
-            goal: goal.clone(),
-            agent: args.agent.clone(),
-            pr_url: None,
-            base_branch: Some(base_branch.clone()),
-        },
-    )?;
+    let meta = state::RunMeta {
+        run_id: run.timestamp.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        branch: branch.clone(),
+        goal: goal.clone(),
+        agent: args.agent.clone(),
+        pr_url: None,
+        base_branch: Some(base_branch.clone()),
+    };
+    state::write_run_meta(&run, &meta)?;
 
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
@@ -69,6 +67,12 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         run.timestamp
     ));
 
+    let mut pr_tracker = if args.draft_pr {
+        Some(PrTracker::new(base_branch.clone(), &run, meta.clone()))
+    } else {
+        None
+    };
+
     let completed = run_iterations(LoopArgs {
         agent: &*agent_impl,
         repo: &repo,
@@ -79,6 +83,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         max_failures: args.max_failures,
         sink: &sink,
         cancelled,
+        pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
@@ -114,18 +119,16 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     if prev_notes.exists() {
         fs::copy(&prev_notes, state::notes_path(&new_run))?;
     }
-    state::write_run_meta(
-        &new_run,
-        &state::RunMeta {
-            run_id: new_run.timestamp.clone(),
-            started_at: Utc::now().to_rfc3339(),
-            branch: prev_meta.branch.clone(),
-            goal: prev_meta.goal.clone(),
-            agent: prev_meta.agent.clone(),
-            pr_url: prev_meta.pr_url.clone(),
-            base_branch: prev_meta.base_branch.clone(),
-        },
-    )?;
+    let new_meta = state::RunMeta {
+        run_id: new_run.timestamp.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        branch: prev_meta.branch.clone(),
+        goal: prev_meta.goal.clone(),
+        agent: prev_meta.agent.clone(),
+        pr_url: prev_meta.pr_url.clone(),
+        base_branch: prev_meta.base_branch.clone(),
+    };
+    state::write_run_meta(&new_run, &new_meta)?;
 
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
@@ -141,6 +144,17 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         prev_meta.branch, new_run.timestamp
     ));
 
+    let track_pr = args.draft_pr || prev_meta.pr_url.is_some();
+    let resume_base = prev_meta
+        .base_branch
+        .clone()
+        .unwrap_or_else(|| "main".to_string());
+    let mut pr_tracker = if track_pr {
+        Some(PrTracker::new(resume_base, &new_run, new_meta.clone()))
+    } else {
+        None
+    };
+
     let completed = run_iterations(LoopArgs {
         agent: &*agent_impl,
         repo: &repo,
@@ -151,6 +165,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         max_failures: args.max_failures,
         sink: &sink,
         cancelled,
+        pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
@@ -173,9 +188,67 @@ struct LoopArgs<'a> {
     max_failures: u32,
     sink: &'a LogSink,
     cancelled: Arc<AtomicBool>,
+    pr_tracker: Option<&'a mut PrTracker<'a>>,
 }
 
-async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
+pub struct PrTracker<'a> {
+    base: String,
+    run: &'a state::RunPaths,
+    meta: state::RunMeta,
+}
+
+impl<'a> PrTracker<'a> {
+    pub fn new(base: String, run: &'a state::RunPaths, meta: state::RunMeta) -> Self {
+        Self { base, run, meta }
+    }
+
+    /// Push the working branch (creating the draft PR on first call).
+    /// All errors are reported via `sink` and swallowed — push/PR
+    /// failures must not abort the surrounding loop.
+    pub fn on_commit(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
+        match self.meta.pr_url.clone() {
+            None => self.create_draft(repo, branch, goal, sink),
+            Some(_) => self.push_existing(repo, branch, sink),
+        }
+    }
+
+    fn create_draft(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
+        if let Err(e) = pr::push(repo, branch, true) {
+            sink.note(&format!("✗ push failed: {e}"));
+            return;
+        }
+        let title: String = goal
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("kobito run")
+            .chars()
+            .take(72)
+            .collect();
+        let body = format!(
+            "Automated draft PR opened by kobito.\n\n## Goal\n\n{}\n",
+            goal.trim()
+        );
+        match pr::create(repo, &self.base, branch, &title, &body, true) {
+            Ok(url) => {
+                sink.note(&format!("✓ draft PR: {url}"));
+                self.meta.pr_url = Some(url);
+                if let Err(e) = state::write_run_meta(self.run, &self.meta) {
+                    sink.note(&format!("✗ persist meta failed: {e}"));
+                }
+            }
+            Err(e) => sink.note(&format!("✗ draft PR create failed: {e}")),
+        }
+    }
+
+    fn push_existing(&self, repo: &Path, branch: &str, sink: &LogSink) {
+        if let Err(e) = pr::push(repo, branch, false) {
+            sink.note(&format!("✗ push failed: {e}"));
+        }
+    }
+}
+
+async fn run_iterations(mut args: LoopArgs<'_>) -> Result<u32> {
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -236,6 +309,10 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 args.sink
                     .note(&format!("  tokens — {}", format_usage(&out.usage)));
                 completed += 1;
+
+                if let Some(tracker) = args.pr_tracker.as_deref_mut() {
+                    tracker.on_commit(args.repo, args.branch, args.goal, args.sink);
+                }
 
                 let notes_path = state::notes_path(args.run);
                 if let Err(e) = notes::append_learning(
