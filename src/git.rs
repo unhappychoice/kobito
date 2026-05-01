@@ -322,4 +322,62 @@ mod tests {
             .to_string();
         assert!(err.contains("git checkout"), "got: {err}");
     }
+
+    #[test]
+    fn default_remote_branch_falls_back_to_main_without_origin_head() {
+        let repo = init_repo("default-fallback");
+        empty_commit(&repo, "init");
+        assert_eq!(default_remote_branch(&repo), "main");
+    }
+
+    #[test]
+    fn default_remote_branch_reads_origin_head_when_configured() {
+        let repo = init_repo("default-configured");
+        empty_commit(&repo, "init");
+        // Manually wire up refs/remotes/origin/{HEAD,trunk} without needing
+        // a real remote — `symbolic-ref` only reads what's on disk.
+        let remotes_dir = repo.join(".git/refs/remotes/origin");
+        fs::create_dir_all(&remotes_dir).unwrap();
+        let head_sha = run_capturing(&repo, &["rev-parse", "HEAD"]);
+        fs::write(remotes_dir.join("trunk"), format!("{head_sha}\n")).unwrap();
+        run(
+            &repo,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        )
+        .unwrap();
+        assert_eq!(default_remote_branch(&repo), "trunk");
+    }
+
+    #[test]
+    fn diff_against_returns_diff_between_two_commits() {
+        let repo = init_repo("diff-against");
+        empty_commit(&repo, "init");
+        let base = run_capturing(&repo, &["rev-parse", "HEAD"]);
+        write_file(&repo, "a.txt", "added\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "feat: add a").unwrap();
+        let diff = diff_against(&repo, &base).unwrap();
+        assert!(
+            diff.contains("+added"),
+            "expected +added in diff, got: {diff}"
+        );
+    }
+
+    #[test]
+    fn diff_against_errors_for_unknown_base() {
+        let repo = init_repo("diff-bad-base");
+        empty_commit(&repo, "init");
+        let err = diff_against(&repo, "does-not-exist").unwrap_err().to_string();
+        assert!(err.contains("git diff"), "got: {err}");
+    }
+
+    fn run_capturing(repo: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
 }
