@@ -210,7 +210,7 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                 consecutive_failures = 0;
                 if out.natural_stop {
                     args.sink
-                        .note("agent reported NATURAL_STOP — exiting cleanly");
+                        .note("agent reported natural_stop — exiting cleanly");
                     break;
                 }
                 git::stage_all(args.repo)?;

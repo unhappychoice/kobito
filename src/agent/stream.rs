@@ -44,6 +44,7 @@ pub async fn run_streamed(
     });
 
     let mut accumulated = String::new();
+    let mut last_message: Option<String> = None;
     let mut usage = Usage::default();
     let mut reader = BufReader::new(stdout).lines();
     let mut interrupted = false;
@@ -64,6 +65,7 @@ pub async fn run_streamed(
                                 AgentEvent::Message(text) => {
                                     accumulated.push_str(text);
                                     accumulated.push('\n');
+                                    last_message = Some(text.clone());
                                 }
                                 AgentEvent::Usage(u) => {
                                     usage = *u;
@@ -91,14 +93,50 @@ pub async fn run_streamed(
     if !status.success() {
         bail!("{name} exited with status {status}");
     }
-    let natural_stop = accumulated.contains("NATURAL_STOP");
-    let task_complete = accumulated.contains("TASK_COMPLETE");
+    let (natural_stop, task_complete) = parse_stop_signal(last_message.as_deref());
     Ok(AgentOutcome {
         stdout: accumulated,
         natural_stop,
         task_complete,
         usage,
     })
+}
+
+/// Parse the agent's *final* `Message` text as a JSON object describing
+/// loop termination. Anything that is not a valid JSON object, or lacks
+/// the recognised boolean fields, is treated as "keep going".
+///
+/// We deliberately look only at the final Message (and only at *its*
+/// content), so source code, diffs, fixtures, or commentary that mention
+/// the field names earlier in the response cannot accidentally end the
+/// loop. See issue #28.
+fn parse_stop_signal(text: Option<&str>) -> (bool, bool) {
+    let Some(text) = text else {
+        return (false, false);
+    };
+    let body = strip_code_fence(text.trim());
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return (false, false);
+    };
+    (
+        v.get("natural_stop")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        v.get("task_complete")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+    )
+}
+
+fn strip_code_fence(s: &str) -> String {
+    let mut t = s.trim();
+    if let Some(rest) = t.strip_prefix("```json").or_else(|| t.strip_prefix("```")) {
+        t = rest.trim();
+    }
+    if let Some(rest) = t.strip_suffix("```") {
+        t = rest.trim();
+    }
+    t.to_string()
 }
 
 pub async fn run_oneshot(mut cmd: Command, name: &str) -> Result<String> {
@@ -202,8 +240,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_streamed_detects_natural_stop_and_task_complete() {
+    async fn run_streamed_detects_stop_signal_from_final_json() {
         let (sink, _dir) = open_sink("stop");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("printf 'doing some work\\n{\"natural_stop\":true,\"task_complete\":true}\\n'");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let outcome = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .unwrap();
+        assert!(outcome.natural_stop);
+        assert!(outcome.task_complete);
+    }
+
+    #[tokio::test]
+    async fn run_streamed_ignores_stop_field_in_intermediate_messages() {
+        // Regression for #28: an intermediate Message that quotes the
+        // sentinel must not end the loop. Only the *final* message is
+        // parsed as JSON.
+        let (sink, _dir) = open_sink("intermediate");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(
+            "printf 'discussed {\"natural_stop\":true} in a test fixture\\nfinal commentary\\n'",
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let outcome = run_streamed(cmd, &FakeAgent, &sink, cancelled)
+            .await
+            .unwrap();
+        assert!(!outcome.natural_stop);
+        assert!(!outcome.task_complete);
+    }
+
+    #[tokio::test]
+    async fn run_streamed_ignores_legacy_uppercase_sentinels() {
+        // The previous implementation used substring matching on
+        // NATURAL_STOP / TASK_COMPLETE; tests that contain those
+        // tokens as fixture data must no longer trigger termination.
+        let (sink, _dir) = open_sink("legacy");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg("printf 'NATURAL_STOP\\nTASK_COMPLETE\\n'");
@@ -211,8 +284,8 @@ mod tests {
         let outcome = run_streamed(cmd, &FakeAgent, &sink, cancelled)
             .await
             .unwrap();
-        assert!(outcome.natural_stop);
-        assert!(outcome.task_complete);
+        assert!(!outcome.natural_stop);
+        assert!(!outcome.task_complete);
     }
 
     #[tokio::test]
@@ -253,5 +326,78 @@ mod tests {
             .err()
             .unwrap();
         assert!(format!("{err:#}").contains("fake"));
+    }
+
+    #[test]
+    fn parse_stop_signal_returns_false_for_none() {
+        assert_eq!(parse_stop_signal(None), (false, false));
+    }
+
+    #[test]
+    fn parse_stop_signal_returns_false_for_non_json_text() {
+        assert_eq!(
+            parse_stop_signal(Some("just a free-form summary")),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_extracts_natural_stop() {
+        assert_eq!(
+            parse_stop_signal(Some(r#"{"natural_stop": true}"#)),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_extracts_task_complete() {
+        assert_eq!(
+            parse_stop_signal(Some(r#"{"task_complete": true}"#)),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_extracts_both_flags() {
+        assert_eq!(
+            parse_stop_signal(Some(
+                r#"{"natural_stop": true, "task_complete": true, "summary": "done"}"#
+            )),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_defaults_missing_fields_to_false() {
+        assert_eq!(
+            parse_stop_signal(Some(r#"{"summary": "wip"}"#)),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_treats_non_bool_field_as_false() {
+        assert_eq!(
+            parse_stop_signal(Some(r#"{"natural_stop": "yes"}"#)),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn parse_stop_signal_strips_plain_code_fence() {
+        let body = "```\n{\"natural_stop\": true}\n```";
+        assert_eq!(parse_stop_signal(Some(body)), (true, false));
+    }
+
+    #[test]
+    fn parse_stop_signal_strips_json_code_fence() {
+        let body = "```json\n{\"task_complete\": true}\n```";
+        assert_eq!(parse_stop_signal(Some(body)), (false, true));
+    }
+
+    #[test]
+    fn parse_stop_signal_tolerates_surrounding_whitespace() {
+        let body = "\n   {\"natural_stop\": true}   \n";
+        assert_eq!(parse_stop_signal(Some(body)), (true, false));
     }
 }

@@ -363,7 +363,7 @@ mod tests {
         for line in [
             "done iter 1",
             "  tokens — 100",
-            "agent reported NATURAL_STOP",
+            "agent reported natural_stop",
         ] {
             let (_, fg, bold) = section_for(line);
             assert!(!bold, "expected non-bold for {line:?}");

@@ -21,9 +21,18 @@ Each invocation of you is one iteration:
 - Use `git log` on the current branch to see what previous iterations of *this* run \
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
-- When the goal is fully reached or no meaningful work remains, output the literal token \
-  `NATURAL_STOP` on its own line and stop. The loop will exit cleanly. Otherwise make a \
-  small focused change and stop so it can be committed.
+
+## How to stop
+
+Your **final message** in this iteration MUST be a single JSON object — nothing else, no prose, no code fence, no commentary:
+
+```
+{\"natural_stop\": <bool>, \"summary\": \"<one-line summary of what you did this iteration>\"}
+```
+
+- Set `natural_stop` to `true` when the goal is fully reached or no meaningful work remains. The orchestrator will exit the loop cleanly.
+- Set `natural_stop` to `false` after making a small focused change so the diff can be committed and the next iteration can run.
+- The JSON is the *only* signal the orchestrator looks at. Discussing or quoting `natural_stop` in earlier messages is fine — only this final JSON is parsed.
 
 ";
 
@@ -43,8 +52,18 @@ Each invocation of you is one iteration of this task's loop:
 - Use `git log` on the current branch to see what previous iterations of *this* task \
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
-- When the task is fully complete, output the literal token `TASK_COMPLETE` on its own \
-  line and stop. The loop will move on to the next task.
+
+## How to stop
+
+Your **final message** in this iteration MUST be a single JSON object — nothing else, no prose, no code fence, no commentary:
+
+```
+{\"task_complete\": <bool>, \"summary\": \"<one-line summary of what you did this iteration>\"}
+```
+
+- Set `task_complete` to `true` when the task is fully done. The orchestrator will move on to the next task.
+- Set `task_complete` to `false` after making a small focused change so the diff can be committed and the next iteration can run.
+- The JSON is the *only* signal the orchestrator looks at. Discussing or quoting `task_complete` in earlier messages is fine — only this final JSON is parsed.
 
 ";
 
@@ -129,7 +148,7 @@ mod tests {
     fn iteration_prompt_includes_meta_goal_and_iteration() {
         let out = build_iteration_prompt(&parts("ship the thing", 7));
         assert!(out.starts_with("# About this run"));
-        assert!(out.contains("NATURAL_STOP"));
+        assert!(out.contains("\"natural_stop\""));
         assert!(out.contains("## Goal\n\nship the thing"));
         assert!(out.contains("## Iteration 7"));
     }
@@ -187,7 +206,7 @@ mod tests {
     fn task_prompt_includes_meta_body_and_iteration() {
         let out = build_task_prompt(&parts("ignored goal", 3), "wire up X");
         assert!(out.starts_with("# About this run"));
-        assert!(out.contains("TASK_COMPLETE"));
+        assert!(out.contains("\"task_complete\""));
         assert!(out.contains("## Single task\n\nwire up X"));
         assert!(out.contains("## Iteration 3"));
     }
@@ -195,7 +214,7 @@ mod tests {
     #[test]
     fn task_prompt_does_not_use_continuous_meta() {
         let out = build_task_prompt(&parts("g", 1), "task");
-        assert!(!out.contains("NATURAL_STOP"));
+        assert!(!out.contains("\"natural_stop\""));
     }
 
     #[test]
