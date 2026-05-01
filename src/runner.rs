@@ -307,7 +307,7 @@ impl<'a> PrTracker<'a> {
         let body = self.pending_body.clone();
         match pr::create(repo, &self.base, branch, &title, &body, true) {
             Ok(url) => {
-                sink.note(&format!("✓ draft PR: {url}"));
+                sink.note(&format!("✓ PR opened (draft): {url}"));
                 self.meta.pr_url = Some(url);
                 if let Err(e) = state::write_run_meta(self.run, &self.meta) {
                     sink.note(&format!("✗ persist meta failed: {e}"));
@@ -530,11 +530,17 @@ fn confirm_finalize() -> bool {
     if !std::io::stdin().is_terminal() {
         return false;
     }
-    dialoguer::Confirm::new()
-        .with_prompt("Finalize PR for review? (no = exit, leave PR draft)")
-        .default(false)
-        .interact()
-        .unwrap_or(false)
+    use std::io::{self, Write};
+    let prompt = crate::logger::style_kobito_prompt(
+        " Finalize PR for review? Agent will rewrite title/body and decide ready vs draft. [y/N] ",
+    );
+    print!("{prompt}");
+    let _ = io::stdout().flush();
+    let mut buf = String::new();
+    if io::stdin().read_line(&mut buf).is_err() {
+        return false;
+    }
+    matches!(buf.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Wrapper around `suggest_pr_metadata` that logs progress and falls
@@ -548,7 +554,7 @@ async fn ask_pr_metadata(
     sink.note("asking agent for draft PR title and description");
     match suggest_pr_metadata(agent, repo, goal).await {
         Ok((title, body)) => {
-            sink.note(&format!("✓ draft PR title: {title}"));
+            sink.note(&format!("✓ PR title drafted: {title}"));
             (title, body)
         }
         Err(e) => {
