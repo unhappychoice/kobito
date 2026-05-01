@@ -79,6 +79,20 @@ pub fn diff_staged(repo: &Path) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
+pub fn diff_against(repo: &Path, base: &str) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["diff", &format!("{base}...HEAD")])
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "git diff {base}...HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(String::from_utf8(out.stdout)?)
+}
+
 pub fn commit(repo: &Path, message: &str) -> Result<()> {
     let out = Command::new("git")
         .current_dir(repo)

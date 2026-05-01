@@ -23,6 +23,16 @@ pub fn create(
     Ok(out)
 }
 
+pub fn edit_body(repo: &Path, url: &str, body: &str) -> Result<()> {
+    run_gh(repo, &["pr", "edit", url, "--body", body])?;
+    Ok(())
+}
+
+pub fn mark_ready(repo: &Path, url: &str) -> Result<()> {
+    run_gh(repo, &["pr", "ready", url])?;
+    Ok(())
+}
+
 fn push_args(branch: &str, set_upstream: bool) -> Vec<String> {
     let mut args = vec!["push".to_string()];
     if set_upstream {

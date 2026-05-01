@@ -11,7 +11,7 @@ mod event;
 mod stream;
 
 pub use event::{AgentEvent, Usage};
-pub use stream::AgentOutcome;
+pub use stream::{AgentOutcome, strip_code_fence};
 
 pub trait Agent: Send + Sync {
     fn name(&self) -> &str;

@@ -131,6 +131,53 @@ pub fn save_prompt(prompts_dir: &Path, iteration: u32, body: &str) -> Result<()>
     Ok(())
 }
 
+pub fn build_finalize_prompt(goal: &str, diff: &str) -> String {
+    format!(
+        "\
+# Finalize this kobito run
+
+You are being driven by `kobito`. The user just hit Ctrl+C and asked to wrap \
+the run up. Your job in this **single** invocation is to look at the full \
+branch diff below and decide whether the work is ready for human review, \
+then write the PR description.
+
+## Original goal
+
+{goal}
+
+## Full branch diff
+
+```diff
+{diff}
+```
+
+## Your final response — strict format
+
+Reply with **exactly one JSON object**, nothing else (no prose, no fence):
+
+```
+{{
+  \"ready_for_review\": <bool>,
+  \"pr_body\": \"<markdown PR description: one-paragraph Summary, a Test plan checklist, and any follow-ups>\",
+  \"summary\": \"<one-line note for kobito's own log>\"
+}}
+```
+
+- Set `ready_for_review` to `true` if the diff is coherent enough that a \
+  human reviewer would not waste their time looking at it. Set it to \
+  `false` if there are obvious holes (failing tests, half-finished \
+  refactors, untested new code paths, TODOs the agent left for itself).
+- `pr_body` is the markdown that will become the PR description. Use \
+  GitHub's conventional sections (Summary / Test plan / Follow-ups). \
+  Wrap at a reasonable width.
+- The JSON is the only signal kobito parses. Discussing the field names \
+  in earlier output is fine; only the *final* message is read.
+",
+        goal = goal.trim(),
+        diff = diff,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +304,24 @@ mod tests {
         let body = fs::read_to_string(&path).unwrap();
         assert_eq!(body, "hello body");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_prompt_includes_goal_diff_and_json_contract() {
+        let out = build_finalize_prompt("ship the feature", "diff body");
+        assert!(out.contains("# Finalize this kobito run"));
+        assert!(out.contains("ship the feature"));
+        assert!(out.contains("diff body"));
+        assert!(out.contains("\"ready_for_review\""));
+        assert!(out.contains("\"pr_body\""));
+        assert!(out.contains("\"summary\""));
+    }
+
+    #[test]
+    fn finalize_prompt_trims_goal() {
+        let out = build_finalize_prompt("  padded  \n\n", "diff");
+        assert!(out.contains("padded"));
+        assert!(!out.contains("  padded  "));
     }
 
     #[test]

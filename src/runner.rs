@@ -59,7 +59,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&run.log_file, Some(bar.clone()))?;
-    let cancelled = install_cancel_handler();
+    let cancel = install_cancel_handler();
 
     sink.note(&format!("kobito start: {}", first_line(&goal)));
     sink.note(&format!(
@@ -82,12 +82,33 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        cancelled,
+        cancelled: cancel.cancelled.clone(),
+        finalize_requested: cancel.finalize_requested.clone(),
         pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
-    bar.finish_and_clear();
+    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
+    {
+        bar.finish_and_clear();
+        if let Some(tracker) = pr_tracker.as_mut() {
+            finalize_run(
+                &*agent_impl,
+                &repo,
+                &goal,
+                &base_branch,
+                tracker,
+                &sink,
+                cancel.cancelled.clone(),
+            )
+            .await;
+        } else {
+            sink.note("finalize requested but --draft-pr was not set; nothing to finalize");
+        }
+    } else {
+        bar.finish_and_clear();
+    }
+
     sink.note(&format!(
         "done — {completed} commits on {branch} (run dir: {})",
         run.run_dir.display()
@@ -133,7 +154,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&new_run.log_file, Some(bar.clone()))?;
-    let cancelled = install_cancel_handler();
+    let cancel = install_cancel_handler();
 
     sink.note(&format!(
         "kobito resume from {target_id}: {}",
@@ -150,7 +171,11 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| "main".to_string());
     let mut pr_tracker = if track_pr {
-        Some(PrTracker::new(resume_base, &new_run, new_meta.clone()))
+        Some(PrTracker::new(
+            resume_base.clone(),
+            &new_run,
+            new_meta.clone(),
+        ))
     } else {
         None
     };
@@ -164,12 +189,33 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        cancelled,
+        cancelled: cancel.cancelled.clone(),
+        finalize_requested: cancel.finalize_requested.clone(),
         pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
-    bar.finish_and_clear();
+    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
+    {
+        bar.finish_and_clear();
+        if let Some(tracker) = pr_tracker.as_mut() {
+            finalize_run(
+                &*agent_impl,
+                &repo,
+                &prev_meta.goal,
+                &resume_base,
+                tracker,
+                &sink,
+                cancel.cancelled.clone(),
+            )
+            .await;
+        } else {
+            sink.note("finalize requested but no PR tracked; nothing to finalize");
+        }
+    } else {
+        bar.finish_and_clear();
+    }
+
     sink.note(&format!(
         "done — {completed} commits on {} (run dir: {})",
         prev_meta.branch,
@@ -178,7 +224,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     Ok(())
 }
 
-struct LoopArgs<'a> {
+struct LoopArgs<'a, 'b> {
     agent: &'a dyn Agent,
     repo: &'a Path,
     run: &'a state::RunPaths,
@@ -188,7 +234,8 @@ struct LoopArgs<'a> {
     max_failures: u32,
     sink: &'a LogSink,
     cancelled: Arc<AtomicBool>,
-    pr_tracker: Option<&'a mut PrTracker<'a>>,
+    finalize_requested: Arc<AtomicBool>,
+    pr_tracker: Option<&'a mut PrTracker<'b>>,
 }
 
 pub struct PrTracker<'a> {
@@ -248,7 +295,7 @@ impl<'a> PrTracker<'a> {
     }
 }
 
-async fn run_iterations(mut args: LoopArgs<'_>) -> Result<u32> {
+async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -256,6 +303,11 @@ async fn run_iterations(mut args: LoopArgs<'_>) -> Result<u32> {
     for iteration in 1..=args.max_iterations {
         if args.cancelled.load(Ordering::SeqCst) {
             args.sink.note("interrupted by user");
+            break;
+        }
+        if args.finalize_requested.load(Ordering::SeqCst) {
+            args.sink
+                .note("finalize requested (Ctrl+C) — exiting iteration loop");
             break;
         }
         args.sink.note(&format!(
@@ -355,11 +407,134 @@ async fn run_iterations(mut args: LoopArgs<'_>) -> Result<u32> {
     Ok(completed)
 }
 
-fn install_cancel_handler() -> Arc<AtomicBool> {
+async fn finalize_run(
+    agent: &dyn Agent,
+    repo: &Path,
+    goal: &str,
+    base_branch: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
+) {
+    let url = match tracker.meta.pr_url.clone() {
+        Some(url) => url,
+        None => {
+            sink.note("finalize: no PR URL recorded; skipping");
+            return;
+        }
+    };
+    if !confirm_finalize() {
+        sink.note("finalize: declined; PR left in draft");
+        return;
+    }
+    sink.note("finalize: asking agent for PR description and ready-flag");
+    let diff = match git::diff_against(repo, base_branch) {
+        Ok(d) => d,
+        Err(e) => {
+            sink.note(&format!("finalize: git diff failed: {e}"));
+            return;
+        }
+    };
+    let prompt_body = prompt::build_finalize_prompt(goal, &truncate_for_finalize(&diff));
+    let outcome = match agent::run(agent, repo, &prompt_body, sink, cancelled).await {
+        Ok(o) => o,
+        Err(e) => {
+            sink.note(&format!("finalize: agent failed: {e}"));
+            return;
+        }
+    };
+    let Some(text) = outcome.final_message.as_deref() else {
+        sink.note("finalize: agent returned no message; PR left in draft");
+        return;
+    };
+    let body_str = agent::strip_code_fence(text.trim());
+    let v: serde_json::Value = match serde_json::from_str(&body_str) {
+        Ok(v) => v,
+        Err(e) => {
+            sink.note(&format!(
+                "finalize: agent reply was not valid JSON ({e}); PR left in draft"
+            ));
+            return;
+        }
+    };
+    let ready = v
+        .get("ready_for_review")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let pr_body = v
+        .get("pr_body")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let summary = v.get("summary").and_then(|x| x.as_str()).unwrap_or("");
+    if !summary.is_empty() {
+        sink.note(&format!("finalize: agent says — {summary}"));
+    }
+    if let Some(body) = pr_body {
+        if let Err(e) = pr::edit_body(repo, &url, &body) {
+            sink.note(&format!("✗ gh pr edit failed: {e}"));
+            return;
+        }
+        sink.note("✓ PR description updated");
+    }
+    if ready {
+        match pr::mark_ready(repo, &url) {
+            Ok(_) => sink.note(&format!("✓ PR marked ready for review: {url}")),
+            Err(e) => sink.note(&format!("✗ gh pr ready failed: {e}")),
+        }
+    } else {
+        sink.note("agent says not ready — PR left in draft");
+    }
+}
+
+fn confirm_finalize() -> bool {
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    dialoguer::Confirm::new()
+        .with_prompt("Finalize PR for review? (no = exit, leave PR draft)")
+        .default(false)
+        .interact()
+        .unwrap_or(false)
+}
+
+fn truncate_for_finalize(s: &str) -> String {
+    const MAX: usize = 20_000;
+    let total = s.chars().count();
+    if total <= MAX {
+        return s.to_string();
+    }
+    let keep = MAX / 2;
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(total - keep).collect();
+    format!("{head}\n…\n[diff truncated]\n…\n{tail}")
+}
+
+/// Two-stage cancellation: the first Ctrl+C raises the
+/// `finalize_requested` flag (a soft signal for the run loop to wrap
+/// up after the current iteration commits), and any subsequent Ctrl+C
+/// raises `cancelled` (a hard signal that propagates into
+/// `agent::run` and aborts immediately).
+pub struct CancelState {
+    pub finalize_requested: Arc<AtomicBool>,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+fn install_cancel_handler() -> CancelState {
+    let finalize_requested = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = cancelled.clone();
-    let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
-    cancelled
+    let f = finalize_requested.clone();
+    let c = cancelled.clone();
+    let _ = ctrlc::set_handler(move || {
+        if !f.swap(true, Ordering::SeqCst) {
+            // first press — soft signal, let in-flight iteration finish
+        } else {
+            c.store(true, Ordering::SeqCst);
+        }
+    });
+    CancelState {
+        finalize_requested,
+        cancelled,
+    }
 }
 
 fn pick_run_to_resume(project: &state::ProjectPaths) -> Result<String> {
@@ -416,5 +591,38 @@ fn format_count(n: u64) -> String {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_for_finalize_passes_short_input_through() {
+        assert_eq!(truncate_for_finalize("short"), "short");
+    }
+
+    #[test]
+    fn truncate_for_finalize_keeps_head_tail_and_marker_for_long_input() {
+        let head = "H".repeat(15_000);
+        let tail = "T".repeat(15_000);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = truncate_for_finalize(&input);
+        assert!(out.starts_with(&"H".repeat(10_000)));
+        assert!(out.ends_with(&"T".repeat(10_000)));
+        assert!(out.contains("[diff truncated]"));
+        assert!(!out.contains("MIDDLE"));
+    }
+
+    #[test]
+    fn truncate_for_finalize_handles_multibyte_input() {
+        let head = "あ".repeat(15_000);
+        let tail = "い".repeat(15_000);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = truncate_for_finalize(&input);
+        assert!(out.starts_with(&"あ".repeat(10_000)));
+        assert!(out.ends_with(&"い".repeat(10_000)));
+        assert!(out.contains("[diff truncated]"));
     }
 }
