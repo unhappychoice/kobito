@@ -67,9 +67,10 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         run.timestamp
     ));
 
-    let mut pr_tracker = if args.draft_pr {
+    let mut pr_tracker = if remote.is_some() {
         Some(PrTracker::new(base_branch.clone(), &run, meta.clone()))
     } else {
+        sink.note("no git remote configured — skipping PR creation and pushes");
         None
     };
 
@@ -88,9 +89,9 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     })
     .await?;
 
+    bar.finish_and_clear();
     if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
     {
-        bar.finish_and_clear();
         if let Some(tracker) = pr_tracker.as_mut() {
             finalize_run(
                 &*agent_impl,
@@ -103,10 +104,8 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             )
             .await;
         } else {
-            sink.note("finalize requested but --draft-pr was not set; nothing to finalize");
+            sink.note("finalize requested — no PR open, exiting cleanly");
         }
-    } else {
-        bar.finish_and_clear();
     }
 
     sink.note(&format!(
@@ -165,18 +164,18 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         prev_meta.branch, new_run.timestamp
     ));
 
-    let track_pr = args.draft_pr || prev_meta.pr_url.is_some();
     let resume_base = prev_meta
         .base_branch
         .clone()
         .unwrap_or_else(|| "main".to_string());
-    let mut pr_tracker = if track_pr {
+    let mut pr_tracker = if remote.is_some() {
         Some(PrTracker::new(
             resume_base.clone(),
             &new_run,
             new_meta.clone(),
         ))
     } else {
+        sink.note("no git remote configured — skipping PR creation and pushes");
         None
     };
 
@@ -195,9 +194,9 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     })
     .await?;
 
+    bar.finish_and_clear();
     if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
     {
-        bar.finish_and_clear();
         if let Some(tracker) = pr_tracker.as_mut() {
             finalize_run(
                 &*agent_impl,
@@ -210,10 +209,8 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
             )
             .await;
         } else {
-            sink.note("finalize requested but no PR tracked; nothing to finalize");
+            sink.note("finalize requested — no PR open, exiting cleanly");
         }
-    } else {
-        bar.finish_and_clear();
     }
 
     sink.note(&format!(
@@ -242,26 +239,38 @@ pub struct PrTracker<'a> {
     base: String,
     run: &'a state::RunPaths,
     meta: state::RunMeta,
+    /// Set after a `gh pr create` failure so we don't pester the user
+    /// with the same error on every subsequent commit. From then on we
+    /// just push (the local branch is the source of truth; the user
+    /// can open the PR by hand).
+    create_failed: bool,
 }
 
 impl<'a> PrTracker<'a> {
     pub fn new(base: String, run: &'a state::RunPaths, meta: state::RunMeta) -> Self {
-        Self { base, run, meta }
+        Self {
+            base,
+            run,
+            meta,
+            create_failed: false,
+        }
     }
 
     /// Push the working branch (creating the draft PR on first call).
     /// All errors are reported via `sink` and swallowed — push/PR
     /// failures must not abort the surrounding loop.
     pub fn on_commit(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
-        match self.meta.pr_url.clone() {
-            None => self.create_draft(repo, branch, goal, sink),
-            Some(_) => self.push_existing(repo, branch, sink),
+        if self.meta.pr_url.is_some() || self.create_failed {
+            self.push_existing(repo, branch, sink);
+        } else {
+            self.create_draft(repo, branch, goal, sink);
         }
     }
 
     fn create_draft(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
         if let Err(e) = pr::push(repo, branch, true) {
             sink.note(&format!("✗ push failed: {e}"));
+            self.create_failed = true;
             return;
         }
         let title: String = goal
@@ -284,12 +293,18 @@ impl<'a> PrTracker<'a> {
                     sink.note(&format!("✗ persist meta failed: {e}"));
                 }
             }
-            Err(e) => sink.note(&format!("✗ draft PR create failed: {e}")),
+            Err(e) => {
+                sink.note(&format!(
+                    "✗ draft PR create failed: {e} (will keep pushing without retrying)"
+                ));
+                self.create_failed = true;
+            }
         }
     }
 
     fn push_existing(&self, repo: &Path, branch: &str, sink: &LogSink) {
-        if let Err(e) = pr::push(repo, branch, false) {
+        let set_upstream = self.meta.pr_url.is_none();
+        if let Err(e) = pr::push(repo, branch, set_upstream) {
             sink.note(&format!("✗ push failed: {e}"));
         }
     }

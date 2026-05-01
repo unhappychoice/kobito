@@ -61,14 +61,6 @@ pub struct ResumeArgs {
     /// Skip the clean-tree check (dangerous).
     #[arg(long)]
     pub allow_dirty: bool,
-
-    /// Open a draft PR upfront and push to it after every commit.
-    /// Requires a configured remote and an authenticated `gh` CLI;
-    /// when either is missing, push/PR steps log a warning and the
-    /// loop continues. If the resumed run already has a PR open, it
-    /// is reused regardless of this flag.
-    #[arg(long)]
-    pub draft_pr: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -137,13 +129,6 @@ pub struct ContinuousArgs {
     /// Skip the clean-tree check (dangerous).
     #[arg(long)]
     pub allow_dirty: bool,
-
-    /// Open a draft PR upfront and push to it after every commit.
-    /// Requires a configured remote and an authenticated `gh` CLI;
-    /// when either is missing, push/PR steps log a warning and the
-    /// loop continues.
-    #[arg(long)]
-    pub draft_pr: bool,
 }
 
 pub async fn dispatch(cli: Cli) -> Result<()> {
