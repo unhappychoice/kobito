@@ -133,7 +133,13 @@ impl LogSink {
     }
 
     fn print(&self, source: &str, line: &str) {
-        let raw = if self.bar.is_some() {
+        // Once the bar is finished (e.g. we are now in the finalize
+        // phase, after `bar.finish_and_clear()`), bypass it entirely:
+        // its writer is no longer maintaining a fresh styling context,
+        // which causes the kobito BG to stop extending to end-of-line
+        // for messages emitted post-finish.
+        let with_bar = self.bar.as_ref().is_some_and(|b| !b.is_finished());
+        let raw = if with_bar {
             format!(" │ {line}")
         } else {
             line.to_string()
@@ -143,8 +149,10 @@ impl LogSink {
         } else {
             raw
         };
-        if let Some(bar) = &self.bar {
-            bar.println(styled);
+        if with_bar {
+            if let Some(bar) = &self.bar {
+                bar.println(styled);
+            }
         } else {
             println!("{styled}");
         }
@@ -199,22 +207,59 @@ fn format_event(event: &AgentEvent) -> Option<String> {
 }
 
 fn extract_iteration_summary(text: &str) -> Option<String> {
-    let body = crate::agent::strip_code_fence(text.trim());
-    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
-    // Only treat as a stop signal if at least one of the recognised
-    // boolean fields is present. Otherwise a stray JSON message
-    // earlier in the conversation could swallow itself.
-    let is_stop = v.get("natural_stop").and_then(|x| x.as_bool()).is_some()
-        || v.get("task_complete").and_then(|x| x.as_bool()).is_some();
-    if !is_stop {
-        return None;
+    let candidates = [
+        crate::agent::strip_code_fence(text.trim()),
+        rightmost_json_object(text)?.to_string(),
+    ];
+    for body in candidates.iter() {
+        let v: serde_json::Value = match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Only treat as a stop signal if at least one of the recognised
+        // schemas is present. Otherwise a stray JSON message earlier
+        // in the conversation could swallow itself.
+        let is_stop = v.get("natural_stop").and_then(|x| x.as_bool()).is_some()
+            || v.get("task_complete").and_then(|x| x.as_bool()).is_some()
+            || v.get("ready_for_review")
+                .and_then(|x| x.as_bool())
+                .is_some();
+        if !is_stop {
+            continue;
+        }
+        let summary = v
+            .get("summary")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(no summary)");
+        return Some(summary.to_string());
     }
-    let summary = v.get("summary")?.as_str()?.trim();
-    if summary.is_empty() {
-        None
-    } else {
-        Some(summary.to_string())
+    None
+}
+
+/// Find the rightmost balanced `{...}` JSON object in `text`. Tolerates
+/// agents that prefix the structured stop signal with prose ("Done.\n\n{…}").
+/// Brace counting is naive — strings containing literal braces would
+/// confuse it — but for kobito's own JSON contract (flat object with
+/// short string values) this is good enough.
+fn rightmost_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let last = bytes.iter().rposition(|&b| b == b'}')?;
+    let mut depth = 0i32;
+    for i in (0..=last).rev() {
+        match bytes[i] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[i..=last]);
+                }
+            }
+            _ => {}
+        }
     }
+    None
 }
 
 /// Muted dark theme using 24-bit color.
@@ -425,6 +470,32 @@ mod tests {
         ))
         .unwrap();
         assert!(s.contains("\"foo\":1"));
+    }
+
+    #[test]
+    fn format_event_renders_summary_for_finalize_signal() {
+        let s = format_event(&AgentEvent::Message(
+            r#"{"ready_for_review":true,"pr_title":"foo","pr_body":"…","summary":"shipped X"}"#
+                .into(),
+        ))
+        .unwrap();
+        assert_eq!(s, "summary: shipped X");
+    }
+
+    #[test]
+    fn format_event_extracts_summary_when_json_is_preceded_by_prose() {
+        let raw =
+            "Iteration complete.\n\n{\"natural_stop\": false, \"summary\": \"added 3 tests\"}";
+        let s = format_event(&AgentEvent::Message(raw.into())).unwrap();
+        assert_eq!(s, "summary: added 3 tests");
+    }
+
+    #[test]
+    fn format_event_falls_back_when_summary_field_is_absent() {
+        // Agent forgot the summary field — render a placeholder rather
+        // than dumping the raw JSON.
+        let s = format_event(&AgentEvent::Message(r#"{"natural_stop": false}"#.into())).unwrap();
+        assert_eq!(s, "summary: (no summary)");
     }
 
     #[test]
