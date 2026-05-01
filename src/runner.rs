@@ -103,6 +103,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             finalize_run(
                 &*agent_impl,
                 &repo,
+                &branch,
                 &goal,
                 &base_branch,
                 tracker,
@@ -216,6 +217,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
             finalize_run(
                 &*agent_impl,
                 &repo,
+                &prev_meta.branch,
                 &prev_meta.goal,
                 &resume_base,
                 tracker,
@@ -442,9 +444,17 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
     Ok(completed)
 }
 
+/// Cap on the review-fix-check loop. High enough that the agent can
+/// chase a couple of stubborn lints / failing tests across rounds, but
+/// low enough that a confused or stuck agent doesn't burn an unbounded
+/// amount of time.
+const MAX_FINALIZE_ROUNDS: u32 = 5;
+
+#[allow(clippy::too_many_arguments)]
 async fn finalize_run(
     agent: &dyn Agent,
     repo: &Path,
+    branch: &str,
     goal: &str,
     base_branch: &str,
     tracker: &mut PrTracker<'_>,
@@ -462,68 +472,192 @@ async fn finalize_run(
         sink.note("finalize: declined; PR left in draft");
         return;
     }
-    sink.note("finalize: asking agent for PR description and ready-flag");
+    sink.note(&format!(
+        "finalize: review-fix-check loop, up to {MAX_FINALIZE_ROUNDS} rounds, until ready_for_review"
+    ));
+
+    let mut last_title: Option<String> = None;
+    let mut last_body: Option<String> = None;
+
+    for round in 1..=MAX_FINALIZE_ROUNDS {
+        if cancelled.load(Ordering::SeqCst) {
+            sink.note("finalize: cancelled");
+            return;
+        }
+        sink.note(&format!(
+            "── finalize round {round} / {MAX_FINALIZE_ROUNDS} ──"
+        ));
+
+        let outcome = match run_finalize_round(
+            agent,
+            repo,
+            branch,
+            goal,
+            base_branch,
+            tracker,
+            sink,
+            cancelled.clone(),
+            round,
+        )
+        .await
+        {
+            Some(o) => o,
+            None => return,
+        };
+
+        if let Some(t) = outcome.title {
+            last_title = Some(t);
+        }
+        if let Some(b) = outcome.body {
+            last_body = Some(b);
+        }
+
+        if outcome.ready {
+            apply_pr_metadata(
+                repo,
+                &url,
+                last_title.as_deref(),
+                last_body.as_deref(),
+                sink,
+            );
+            match pr::mark_ready(repo, &url) {
+                Ok(_) => sink.note(&format!("✓ PR marked ready for review: {url}")),
+                Err(e) => sink.note(&format!("✗ gh pr ready failed: {e}")),
+            }
+            return;
+        }
+        sink.note(&format!(
+            "finalize: not ready yet (round {round}/{MAX_FINALIZE_ROUNDS}); continuing"
+        ));
+    }
+
+    sink.note(&format!(
+        "finalize: gave up after {MAX_FINALIZE_ROUNDS} rounds; leaving PR in draft for manual review"
+    ));
+    apply_pr_metadata(
+        repo,
+        &url,
+        last_title.as_deref(),
+        last_body.as_deref(),
+        sink,
+    );
+}
+
+struct FinalizeRoundOutcome {
+    ready: bool,
+    title: Option<String>,
+    body: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_finalize_round(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    base_branch: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
+    round: u32,
+) -> Option<FinalizeRoundOutcome> {
     let diff = match git::diff_against(repo, base_branch) {
         Ok(d) => d,
         Err(e) => {
             sink.note(&format!("finalize: git diff failed: {e}"));
-            return;
+            return None;
         }
     };
-    let prompt_body = prompt::build_finalize_prompt(goal, &truncate_for_finalize(&diff));
-    let outcome = match agent::run(agent, repo, &prompt_body, sink, cancelled).await {
+    let prompt_body = prompt::build_finalize_prompt(
+        goal,
+        &truncate_for_finalize(&diff),
+        round,
+        MAX_FINALIZE_ROUNDS,
+    );
+    let outcome = match agent::run(agent, repo, &prompt_body, sink, cancelled.clone()).await {
         Ok(o) => o,
         Err(e) => {
             sink.note(&format!("finalize: agent failed: {e}"));
-            return;
+            return None;
         }
     };
-    let Some(text) = outcome.final_message.as_deref() else {
-        sink.note("finalize: agent returned no message; PR left in draft");
-        return;
-    };
+
+    if let Err(e) = commit_finalize_fixes(agent, repo, branch, goal, tracker, sink).await {
+        sink.note(&format!("✗ finalize commit failed: {e}; stopping"));
+        return None;
+    }
+    if cancelled.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    let text = outcome.final_message.as_deref()?;
     let body_str = agent::strip_code_fence(text.trim());
     let v: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(v) => v,
         Err(e) => {
             sink.note(&format!(
-                "finalize: agent reply was not valid JSON ({e}); PR left in draft"
+                "finalize: agent reply was not valid JSON ({e}); stopping"
             ));
-            return;
+            return None;
         }
     };
     let ready = v
         .get("ready_for_review")
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
-    let pr_title = v
+    let title = v
         .get("pr_title")
         .and_then(|x| x.as_str())
         .map(|s| s.trim().chars().take(72).collect::<String>())
         .filter(|s| !s.is_empty());
-    let pr_body = v
+    let body = v
         .get("pr_body")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
-    let summary = v.get("summary").and_then(|x| x.as_str()).unwrap_or("");
-    if !summary.is_empty() {
-        sink.note(&format!("finalize: agent says — {summary}"));
-    }
-    if pr_title.is_some() || pr_body.is_some() {
-        if let Err(e) = pr::edit(repo, &url, pr_title.as_deref(), pr_body.as_deref()) {
-            sink.note(&format!("✗ gh pr edit failed: {e}"));
-            return;
+    if let Some(s) = v.get("summary").and_then(|x| x.as_str()) {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            sink.note(&format!("finalize: agent says — {trimmed}"));
         }
-        sink.note("✓ PR title/description updated");
     }
-    if ready {
-        match pr::mark_ready(repo, &url) {
-            Ok(_) => sink.note(&format!("✓ PR marked ready for review: {url}")),
-            Err(e) => sink.note(&format!("✗ gh pr ready failed: {e}")),
-        }
-    } else {
-        sink.note("agent says not ready — PR left in draft");
+    Some(FinalizeRoundOutcome { ready, title, body })
+}
+
+fn apply_pr_metadata(
+    repo: &Path,
+    url: &str,
+    title: Option<&str>,
+    body: Option<&str>,
+    sink: &LogSink,
+) {
+    if title.is_none() && body.is_none() {
+        return;
     }
+    match pr::edit(repo, url, title, body) {
+        Ok(_) => sink.note("✓ PR title/description updated"),
+        Err(e) => sink.note(&format!("✗ gh pr edit failed: {e}")),
+    }
+}
+
+async fn commit_finalize_fixes(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+) -> Result<()> {
+    git::stage_all(repo)?;
+    if !git::has_staged_changes(repo)? {
+        return Ok(());
+    }
+    let diff = git::diff_staged(repo)?;
+    let style = git::recent_commit_messages(repo, 20).unwrap_or_default();
+    let msg = commit::generate_message(agent, repo, &diff, goal, &style).await?;
+    git::commit(repo, &msg)?;
+    sink.note(&format!("✓ finalize commit: {}", first_line(&msg)));
+    tracker.on_commit(repo, branch, goal, sink);
+    Ok(())
 }
 
 fn confirm_finalize() -> bool {
