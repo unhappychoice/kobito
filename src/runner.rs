@@ -34,7 +34,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let project = state::project_paths(id.clone())?;
     let run = state::new_run(project.clone())?;
 
-    let base_branch = git::current_branch(&repo)?;
+    let base_branch = git::default_remote_branch(&repo);
     let suggested = branch::suggest(&*agent_impl, &repo, &goal)
         .await
         .unwrap_or_else(|_| format!("kobito/{}", slugify(&goal)));
@@ -167,7 +167,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     let resume_base = prev_meta
         .base_branch
         .clone()
-        .unwrap_or_else(|| "main".to_string());
+        .unwrap_or_else(|| git::default_remote_branch(&repo));
     let mut pr_tracker = if remote.is_some() {
         Some(PrTracker::new(
             resume_base.clone(),
