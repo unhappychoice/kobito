@@ -9,6 +9,7 @@ mod git;
 mod iteration;
 mod logger;
 mod notes;
+mod pr;
 mod preset;
 mod prompt;
 mod runner;
