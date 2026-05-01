@@ -76,6 +76,18 @@ fn pattern() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_path(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-tasks-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("tasks.md")
+    }
 
     #[test]
     fn parse_extracts_checkboxes_and_skips_other_lines() {
@@ -112,5 +124,62 @@ mod tests {
         let mut b = Backlog::parse("- [ ] one\n");
         b.mark_completed(0);
         assert!(b.raw.ends_with('\n'));
+    }
+
+    #[test]
+    fn parse_treats_capital_x_as_completed() {
+        let b = Backlog::parse("- [X] big done\n");
+        assert_eq!(b.items.len(), 1);
+        assert!(b.items[0].completed);
+        assert_eq!(b.items[0].body, "big done");
+    }
+
+    #[test]
+    fn mark_completed_is_noop_when_line_no_out_of_range() {
+        let mut b = Backlog::parse("- [ ] one\n");
+        let before = b.raw.clone();
+        b.mark_completed(99);
+        assert_eq!(b.raw, before);
+        assert!(!b.items[0].completed);
+    }
+
+    #[test]
+    fn mark_completed_preserves_absence_of_trailing_newline() {
+        let mut b = Backlog::parse("- [ ] one");
+        b.mark_completed(0);
+        assert!(!b.raw.ends_with('\n'));
+        assert!(b.raw.contains("- [x] one"));
+    }
+
+    #[test]
+    fn from_file_reads_and_parses_tasks() {
+        let path = unique_path("from-file");
+        fs::write(&path, "- [ ] alpha\n- [x] beta\n").unwrap();
+        let b = Backlog::from_file(&path).unwrap();
+        assert_eq!(b.items.len(), 2);
+        assert_eq!(b.items[0].body, "alpha");
+        assert!(b.items[1].completed);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn from_file_errors_when_missing() {
+        let path = unique_path("missing");
+        let err = Backlog::from_file(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("read"), "error should mention read: {msg}");
+    }
+
+    #[test]
+    fn write_round_trips_through_from_file() {
+        let path = unique_path("write-rt");
+        let mut b = Backlog::parse("- [ ] one\n- [ ] two\n");
+        b.mark_completed(0);
+        b.write(&path).unwrap();
+        let reloaded = Backlog::from_file(&path).unwrap();
+        assert_eq!(reloaded.items.len(), 2);
+        assert!(reloaded.items[0].completed);
+        assert!(!reloaded.items[1].completed);
+        fs::remove_file(&path).ok();
     }
 }
