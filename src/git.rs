@@ -302,4 +302,35 @@ mod tests {
             .to_string();
         assert!(err.contains("git checkout"), "got: {err}");
     }
+
+    #[test]
+    fn diff_against_returns_changes_between_base_and_head() {
+        let repo = init_repo("diff-against");
+        write_file(&repo, "a.txt", "v1\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "init").unwrap();
+        create_and_checkout(&repo, "feature/x").unwrap();
+        write_file(&repo, "a.txt", "v2\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "update a").unwrap();
+        let diff = diff_against(&repo, "main").unwrap();
+        assert!(diff.contains("-v1"), "expected -v1 in diff, got: {diff}");
+        assert!(diff.contains("+v2"), "expected +v2 in diff, got: {diff}");
+    }
+
+    #[test]
+    fn diff_against_returns_empty_when_no_divergence() {
+        let repo = init_repo("diff-against-empty");
+        empty_commit(&repo, "init");
+        let diff = diff_against(&repo, "HEAD").unwrap();
+        assert!(diff.is_empty(), "expected empty diff, got: {diff}");
+    }
+
+    #[test]
+    fn diff_against_errors_for_unknown_base() {
+        let repo = init_repo("diff-against-bad");
+        empty_commit(&repo, "init");
+        let err = diff_against(&repo, "no-such-ref").unwrap_err().to_string();
+        assert!(err.contains("git diff"), "got: {err}");
+    }
 }

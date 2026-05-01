@@ -113,4 +113,52 @@ mod tests {
         b.mark_completed(0);
         assert!(b.raw.ends_with('\n'));
     }
+
+    fn unique_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kobito-tasks-{label}-{}-{}.md",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ))
+    }
+
+    #[test]
+    fn from_file_reads_and_parses_tasks() {
+        let path = unique_path("from-file");
+        fs::write(&path, "- [ ] alpha\n- [x] beta\n").unwrap();
+        let b = Backlog::from_file(&path).unwrap();
+        assert_eq!(b.items.len(), 2);
+        assert_eq!(b.items[0].body, "alpha");
+        assert!(b.items[1].completed);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn from_file_errors_when_missing() {
+        let path = unique_path("missing");
+        let err = Backlog::from_file(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("read"));
+    }
+
+    #[test]
+    fn write_persists_raw_contents_to_disk() {
+        let path = unique_path("write");
+        let mut b = Backlog::parse("- [ ] one\n- [ ] two\n");
+        b.mark_completed(0);
+        b.write(&path).unwrap();
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("- [x] one"));
+        assert!(on_disk.contains("- [ ] two"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn from_file_round_trips_through_write() {
+        let path = unique_path("round-trip");
+        fs::write(&path, "- [ ] keep\n").unwrap();
+        let b = Backlog::from_file(&path).unwrap();
+        b.write(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "- [ ] keep\n");
+        fs::remove_file(&path).ok();
+    }
 }
