@@ -612,6 +612,78 @@ fn format_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Usage;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_tmp(label: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-runner-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+
+    fn init_repo(label: &str) -> TempDir {
+        let dir = unique_tmp(label);
+        let cfg = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(&*dir)
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        cfg(&["init", "-q", "-b", "main"]);
+        cfg(&["config", "user.email", "test@example.com"]);
+        cfg(&["config", "user.name", "Test"]);
+        cfg(&["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    fn run_paths_in(state_dir: &Path) -> state::RunPaths {
+        let run_dir = state_dir.join("runs/r1");
+        let prompts_dir = run_dir.join("prompts");
+        fs::create_dir_all(&prompts_dir).unwrap();
+        let log_file = run_dir.join("log.ndjson");
+        fs::write(&log_file, "").unwrap();
+        state::RunPaths {
+            project: state::ProjectPaths {
+                id: "p".to_string(),
+                root: state_dir.to_path_buf(),
+            },
+            run_dir,
+            log_file,
+            prompts_dir,
+            timestamp: "r1".to_string(),
+        }
+    }
+
+    fn sample_meta(pr_url: Option<&str>) -> state::RunMeta {
+        state::RunMeta {
+            run_id: "r1".to_string(),
+            started_at: "2026-05-01T00:00:00Z".to_string(),
+            branch: "feature/x".to_string(),
+            goal: "do thing".to_string(),
+            agent: "claude".to_string(),
+            pr_url: pr_url.map(|s| s.to_string()),
+            base_branch: Some("main".to_string()),
+        }
+    }
 
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
@@ -639,5 +711,134 @@ mod tests {
         assert!(out.starts_with(&"あ".repeat(10_000)));
         assert!(out.ends_with(&"い".repeat(10_000)));
         assert!(out.contains("[diff truncated]"));
+    }
+
+    #[test]
+    fn slugify_lowercases_and_kebab_cases() {
+        assert_eq!(slugify("Increase Test Coverage"), "increase-test-coverage");
+    }
+
+    #[test]
+    fn slugify_truncates_to_40_chars() {
+        let long = "a".repeat(100);
+        let out = slugify(&long);
+        assert_eq!(out.chars().count(), 40);
+    }
+
+    #[test]
+    fn slugify_collapses_punctuation_and_whitespace() {
+        let out = slugify("hello,   world!!!");
+        assert!(out.contains("hello"));
+        assert!(out.contains("world"));
+        assert!(!out.contains(' '));
+        assert!(!out.contains(','));
+    }
+
+    #[test]
+    fn first_line_returns_empty_for_empty_input() {
+        assert_eq!(first_line(""), "");
+    }
+
+    #[test]
+    fn first_line_returns_only_the_first_line() {
+        assert_eq!(first_line("alpha\nbeta\ngamma"), "alpha");
+    }
+
+    #[test]
+    fn first_line_returns_whole_input_when_single_line() {
+        assert_eq!(first_line("just one line"), "just one line");
+    }
+
+    #[test]
+    fn format_count_renders_compact_units() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1.0k");
+        assert_eq!(format_count(1_500), "1.5k");
+        assert_eq!(format_count(1_000_000), "1.0M");
+        assert_eq!(format_count(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn format_usage_includes_all_three_token_counts() {
+        let u = Usage {
+            input_tokens: 1_500,
+            output_tokens: 2_500,
+            cached_input_tokens: 800,
+        };
+        let s = format_usage(&u);
+        assert!(s.contains("in 1.5k"));
+        assert!(s.contains("out 2.5k"));
+        assert!(s.contains("cached 800"));
+    }
+
+    #[test]
+    fn pr_tracker_new_stores_base_and_meta() {
+        let state_dir = unique_tmp("tracker-new");
+        let run = run_paths_in(&state_dir);
+        let meta = sample_meta(None);
+        let tracker = PrTracker::new("main".to_string(), &run, meta.clone());
+        assert_eq!(tracker.base, "main");
+        assert_eq!(tracker.meta.branch, meta.branch);
+        assert!(!tracker.create_failed);
+    }
+
+    #[test]
+    fn pr_tracker_on_commit_logs_push_failure_when_no_remote_and_no_pr_yet() {
+        let repo = init_repo("tracker-create-draft");
+        let state_dir = unique_tmp("tracker-state-1");
+        let run = run_paths_in(&state_dir);
+        let log_path = run.log_file.clone();
+        let sink = LogSink::open(&log_path, None).unwrap();
+        let mut tracker = PrTracker::new("main".to_string(), &run, sample_meta(None));
+
+        tracker.on_commit(&repo, "feature/x", "make a change", &sink);
+
+        let body = fs::read_to_string(&log_path).unwrap();
+        assert!(
+            body.contains("push failed"),
+            "expected push failure note, got: {body}"
+        );
+        assert!(tracker.create_failed);
+        assert!(tracker.meta.pr_url.is_none());
+    }
+
+    #[test]
+    fn pr_tracker_on_commit_takes_push_existing_path_when_pr_url_set() {
+        let repo = init_repo("tracker-push-existing");
+        let state_dir = unique_tmp("tracker-state-2");
+        let run = run_paths_in(&state_dir);
+        let log_path = run.log_file.clone();
+        let sink = LogSink::open(&log_path, None).unwrap();
+        let mut tracker = PrTracker::new(
+            "main".to_string(),
+            &run,
+            sample_meta(Some("https://example.invalid/owner/repo/pull/1")),
+        );
+
+        tracker.on_commit(&repo, "feature/x", "goal", &sink);
+
+        let body = fs::read_to_string(&log_path).unwrap();
+        assert!(body.contains("push failed"));
+        assert!(!tracker.create_failed);
+    }
+
+    #[test]
+    fn pr_tracker_on_commit_after_create_failed_uses_push_existing() {
+        let repo = init_repo("tracker-after-fail");
+        let state_dir = unique_tmp("tracker-state-3");
+        let run = run_paths_in(&state_dir);
+        let log_path = run.log_file.clone();
+        let sink = LogSink::open(&log_path, None).unwrap();
+        let mut tracker = PrTracker::new("main".to_string(), &run, sample_meta(None));
+
+        tracker.on_commit(&repo, "feature/x", "goal", &sink);
+        assert!(tracker.create_failed);
+
+        tracker.on_commit(&repo, "feature/x", "goal", &sink);
+
+        let body = fs::read_to_string(&log_path).unwrap();
+        let push_failed_count = body.matches("push failed").count();
+        assert!(push_failed_count >= 2);
     }
 }
