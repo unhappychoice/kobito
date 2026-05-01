@@ -76,6 +76,17 @@ fn pattern() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-tasks-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn parse_extracts_checkboxes_and_skips_other_lines() {
@@ -112,5 +123,63 @@ mod tests {
         let mut b = Backlog::parse("- [ ] one\n");
         b.mark_completed(0);
         assert!(b.raw.ends_with('\n'));
+    }
+
+    #[test]
+    fn from_file_reads_existing_backlog() {
+        let dir = unique_dir("from_file_ok");
+        let path = dir.join("tasks.md");
+        fs::write(&path, "- [ ] alpha\n- [x] beta\n").unwrap();
+
+        let b = Backlog::from_file(&path).expect("from_file should succeed");
+        assert_eq!(b.items.len(), 2);
+        assert_eq!(b.items[0].body, "alpha");
+        assert!(!b.items[0].completed);
+        assert!(b.items[1].completed);
+    }
+
+    #[test]
+    fn from_file_returns_error_when_path_missing() {
+        let dir = unique_dir("from_file_missing");
+        let path = dir.join("nope.md");
+
+        let err = Backlog::from_file(&path).expect_err("missing file should error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("read") && msg.contains("nope.md"),
+            "error should mention read context and path: {msg}",
+        );
+    }
+
+    #[test]
+    fn write_persists_raw_back_to_disk() {
+        let dir = unique_dir("write");
+        let path = dir.join("out.md");
+        let mut b = Backlog::parse("- [ ] todo\n- [ ] also\n");
+        b.mark_completed(0);
+        b.write(&path).expect("write should succeed");
+
+        let read_back = fs::read_to_string(&path).unwrap();
+        assert!(read_back.contains("- [x] todo"));
+        assert!(read_back.contains("- [ ] also"));
+        assert!(read_back.ends_with('\n'));
+    }
+
+    #[test]
+    fn mark_completed_is_a_noop_for_out_of_range_line() {
+        let mut b = Backlog::parse("- [ ] one\n- [ ] two\n");
+        let before = b.raw.clone();
+        b.mark_completed(99);
+        assert_eq!(b.raw, before);
+        assert!(!b.items[0].completed);
+        assert!(!b.items[1].completed);
+    }
+
+    #[test]
+    fn mark_completed_preserves_absence_of_trailing_newline() {
+        let mut b = Backlog::parse("- [ ] one\n- [ ] two");
+        b.mark_completed(1);
+        assert!(b.raw.contains("- [x] two"));
+        assert!(!b.raw.ends_with('\n'));
     }
 }
