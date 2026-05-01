@@ -109,6 +109,58 @@ fn run_gh<S: AsRef<str>>(repo: &Path, args: &[S]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TempRepo(PathBuf);
+    impl std::ops::Deref for TempRepo {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-pr-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo_with_origin(label: &str) -> (TempRepo, TempRepo) {
+        let bare = unique_dir(&format!("{label}-bare"));
+        git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+        let work = unique_dir(&format!("{label}-work"));
+        git(&work, &["init", "-q", "-b", "main"]);
+        git(&work, &["config", "user.email", "test@example.com"]);
+        git(&work, &["config", "user.name", "Test"]);
+        git(&work, &["config", "commit.gpgsign", "false"]);
+        git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&work, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        (TempRepo(bare), TempRepo(work))
+    }
 
     #[test]
     fn push_args_with_upstream_includes_dash_u() {
@@ -145,5 +197,31 @@ mod tests {
         assert_eq!(args[title_idx + 1], "the title");
         let body_idx = args.iter().position(|a| a == "--body").unwrap();
         assert_eq!(args[body_idx + 1], "multi\nline\nbody");
+    }
+
+    #[test]
+    fn edit_is_a_noop_when_title_and_body_are_both_none() {
+        let dir = unique_dir("edit-noop");
+        edit(&dir, "https://example.com/pr/1", None, None).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn push_succeeds_against_local_bare_remote() {
+        let (_bare, work) = init_repo_with_origin("push-ok");
+        push(&work, "main", true).unwrap();
+    }
+
+    #[test]
+    fn push_fails_when_repo_has_no_origin() {
+        let dir = unique_dir("push-no-origin");
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        git(&dir, &["commit", "--allow-empty", "-q", "-m", "init"]);
+        let err = push(&dir, "main", false).unwrap_err().to_string();
+        assert!(err.contains("git push failed"), "got: {err}");
+        fs::remove_dir_all(&dir).ok();
     }
 }
