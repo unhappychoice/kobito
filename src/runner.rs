@@ -34,6 +34,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let project = state::project_paths(id.clone())?;
     let run = state::new_run(project.clone())?;
 
+    let base_branch = git::current_branch(&repo)?;
     let suggested = branch::suggest(&*agent_impl, &repo, &goal)
         .await
         .unwrap_or_else(|_| format!("kobito/{}", slugify(&goal)));
@@ -52,6 +53,8 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
             branch: branch.clone(),
             goal: goal.clone(),
             agent: args.agent.clone(),
+            pr_url: None,
+            base_branch: Some(base_branch.clone()),
         },
     )?;
 
@@ -119,6 +122,8 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
             branch: prev_meta.branch.clone(),
             goal: prev_meta.goal.clone(),
             agent: prev_meta.agent.clone(),
+            pr_url: prev_meta.pr_url.clone(),
+            base_branch: prev_meta.base_branch.clone(),
         },
     )?;
 
