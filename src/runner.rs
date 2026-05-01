@@ -291,15 +291,15 @@ impl<'a> PrTracker<'a> {
     /// Push the working branch (creating the draft PR on first call).
     /// All errors are reported via `sink` and swallowed — push/PR
     /// failures must not abort the surrounding loop.
-    pub fn on_commit(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
+    pub fn on_commit(&mut self, repo: &Path, branch: &str, sink: &LogSink) {
         if self.meta.pr_url.is_some() || self.create_failed {
             self.push_existing(repo, branch, sink);
         } else {
-            self.create_draft(repo, branch, goal, sink);
+            self.create_draft(repo, branch, sink);
         }
     }
 
-    fn create_draft(&mut self, repo: &Path, branch: &str, _goal: &str, sink: &LogSink) {
+    fn create_draft(&mut self, repo: &Path, branch: &str, sink: &LogSink) {
         if let Err(e) = pr::push(repo, branch, true) {
             sink.note(&format!("✗ push failed: {e}"));
             self.create_failed = true;
@@ -400,7 +400,7 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
                 completed += 1;
 
                 if let Some(tracker) = args.pr_tracker.as_deref_mut() {
-                    tracker.on_commit(args.repo, args.branch, args.goal, args.sink);
+                    tracker.on_commit(args.repo, args.branch, args.sink);
                 }
 
                 let notes_path = state::notes_path(args.run);
@@ -653,11 +653,42 @@ async fn commit_finalize_fixes(
     }
     let diff = git::diff_staged(repo)?;
     let style = git::recent_commit_messages(repo, 20).unwrap_or_default();
-    let msg = commit::generate_message(agent, repo, &diff, goal, &style).await?;
+    let raw = commit::generate_message(agent, repo, &diff, goal, &style).await?;
+    let msg = ensure_finalize_prefix(&raw);
     git::commit(repo, &msg)?;
     sink.note(&format!("✓ finalize commit: {}", first_line(&msg)));
-    tracker.on_commit(repo, branch, goal, sink);
+    tracker.on_commit(repo, branch, sink);
     Ok(())
+}
+
+/// Enforce a `chore(finalize): …` subject on commits made during the
+/// review-fix loop, regardless of what the commit-message agent
+/// generated. Strips any pre-existing `<type>(<scope>): ` Conventional
+/// Commits prefix so the result reads cleanly rather than nesting.
+fn ensure_finalize_prefix(msg: &str) -> String {
+    let trimmed = msg.trim_start();
+    if trimmed.starts_with("chore(finalize)") {
+        return trimmed.to_string();
+    }
+    let head_end = trimmed.find('\n').unwrap_or(trimmed.len());
+    let (subject, rest) = trimmed.split_at(head_end);
+    let body = subject_without_conventional_prefix(subject);
+    format!("chore(finalize): {body}{rest}")
+}
+
+fn subject_without_conventional_prefix(subject: &str) -> &str {
+    let Some((head, rest)) = subject.split_once(": ") else {
+        return subject;
+    };
+    let typ = match head.split_once('(') {
+        Some((typ, scope)) if scope.ends_with(')') => typ,
+        Some(_) => return subject,
+        None => head,
+    };
+    if typ.is_empty() || !typ.chars().all(|c| c.is_ascii_lowercase()) {
+        return subject;
+    }
+    rest
 }
 
 fn confirm_finalize() -> bool {
@@ -666,7 +697,7 @@ fn confirm_finalize() -> bool {
     }
     use std::io::{self, Write};
     let prompt = crate::logger::style_kobito_prompt(
-        " Finalize PR for review? Agent will rewrite title/body and decide ready vs draft. [y/N] ",
+        " Finalize PR for review? Agent will review the diff, fix any issues, run quality gates (up to 5 rounds), then rewrite title/body and mark ready. [y/N] ",
     );
     print!("{prompt}");
     let _ = io::stdout().flush();
@@ -870,5 +901,49 @@ mod tests {
         assert!(out.starts_with(&"あ".repeat(10_000)));
         assert!(out.ends_with(&"い".repeat(10_000)));
         assert!(out.contains("[diff truncated]"));
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_passes_through_when_already_correct() {
+        assert_eq!(
+            ensure_finalize_prefix("chore(finalize): polish things"),
+            "chore(finalize): polish things"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_replaces_existing_conventional_prefix() {
+        assert_eq!(
+            ensure_finalize_prefix("test(notes): cover edge case"),
+            "chore(finalize): cover edge case"
+        );
+        assert_eq!(ensure_finalize_prefix("fix: oops"), "chore(finalize): oops");
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_prepends_when_no_conventional_type() {
+        assert_eq!(
+            ensure_finalize_prefix("Update foo"),
+            "chore(finalize): Update foo"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_preserves_body() {
+        let msg = "test(x): cover thing\n\nbody line\nanother";
+        assert_eq!(
+            ensure_finalize_prefix(msg),
+            "chore(finalize): cover thing\n\nbody line\nanother"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_does_not_mistake_url_colon_for_conventional() {
+        // Subjects with mixed case or `://` are not conventional commit
+        // prefixes — leave them alone (just prepend).
+        assert_eq!(
+            ensure_finalize_prefix("https://example.com is a url"),
+            "chore(finalize): https://example.com is a url"
+        );
     }
 }
