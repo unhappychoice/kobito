@@ -23,8 +23,22 @@ pub fn create(
     Ok(out)
 }
 
-pub fn edit_body(repo: &Path, url: &str, body: &str) -> Result<()> {
-    run_gh(repo, &["pr", "edit", url, "--body", body])?;
+/// Edit a PR's title and/or body via `gh pr edit`. Each field is optional
+/// so callers can update one without clobbering the other.
+pub fn edit(repo: &Path, url: &str, title: Option<&str>, body: Option<&str>) -> Result<()> {
+    if title.is_none() && body.is_none() {
+        return Ok(());
+    }
+    let mut args = vec!["pr".to_string(), "edit".to_string(), url.to_string()];
+    if let Some(t) = title {
+        args.push("--title".to_string());
+        args.push(t.to_string());
+    }
+    if let Some(b) = body {
+        args.push("--body".to_string());
+        args.push(b.to_string());
+    }
+    run_gh(repo, &args)?;
     Ok(())
 }
 

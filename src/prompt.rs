@@ -158,6 +158,7 @@ Reply with **exactly one JSON object**, nothing else (no prose, no fence):
 ```
 {{
   \"ready_for_review\": <bool>,
+  \"pr_title\": \"<short PR title, ≤72 chars, conventional-commit style>\",
   \"pr_body\": \"<markdown PR description: one-paragraph Summary, a Test plan checklist, and any follow-ups>\",
   \"summary\": \"<one-line note for kobito's own log>\"
 }}
@@ -167,6 +168,9 @@ Reply with **exactly one JSON object**, nothing else (no prose, no fence):
   human reviewer would not waste their time looking at it. Set it to \
   `false` if there are obvious holes (failing tests, half-finished \
   refactors, untested new code paths, TODOs the agent left for itself).
+- `pr_title` is the headline shown in the GitHub PR list. Keep it short \
+  and descriptive — kobito's placeholder title (drafted at run start) \
+  will be replaced by this value.
 - `pr_body` is the markdown that will become the PR description. Use \
   GitHub's conventional sections (Summary / Test plan / Follow-ups). \
   Wrap at a reasonable width.

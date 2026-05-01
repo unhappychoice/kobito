@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use std::fs;
 use std::io::IsTerminal;
@@ -68,7 +68,14 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     ));
 
     let mut pr_tracker = if remote.is_some() {
-        Some(PrTracker::new(base_branch.clone(), &run, meta.clone()))
+        let (title, body) = ask_pr_metadata(&*agent_impl, &repo, &goal, &sink).await;
+        Some(PrTracker::new(
+            base_branch.clone(),
+            &run,
+            meta.clone(),
+            title,
+            body,
+        ))
     } else {
         sink.note("no git remote configured — skipping PR creation and pushes");
         None
@@ -169,10 +176,18 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| git::default_remote_branch(&repo));
     let mut pr_tracker = if remote.is_some() {
+        let (title, body) = if new_meta.pr_url.is_none() {
+            ask_pr_metadata(&*agent_impl, &repo, &prev_meta.goal, &sink).await
+        } else {
+            // PR already exists; title/body are unused for this run.
+            (String::new(), String::new())
+        };
         Some(PrTracker::new(
             resume_base.clone(),
             &new_run,
             new_meta.clone(),
+            title,
+            body,
         ))
     } else {
         sink.note("no git remote configured — skipping PR creation and pushes");
@@ -239,6 +254,13 @@ pub struct PrTracker<'a> {
     base: String,
     run: &'a state::RunPaths,
     meta: state::RunMeta,
+    /// Title to use when the draft PR is opened. Generated upfront by
+    /// the agent so the GitHub PR list shows something meaningful from
+    /// the very first commit; the finalize phase can replace it later.
+    pending_title: String,
+    /// Body for the initial draft PR. Same story as `pending_title` —
+    /// agent-suggested, replaced by the finalize phase.
+    pending_body: String,
     /// Set after a `gh pr create` failure so we don't pester the user
     /// with the same error on every subsequent commit. From then on we
     /// just push (the local branch is the source of truth; the user
@@ -247,11 +269,19 @@ pub struct PrTracker<'a> {
 }
 
 impl<'a> PrTracker<'a> {
-    pub fn new(base: String, run: &'a state::RunPaths, meta: state::RunMeta) -> Self {
+    pub fn new(
+        base: String,
+        run: &'a state::RunPaths,
+        meta: state::RunMeta,
+        pending_title: String,
+        pending_body: String,
+    ) -> Self {
         Self {
             base,
             run,
             meta,
+            pending_title,
+            pending_body,
             create_failed: false,
         }
     }
@@ -267,24 +297,14 @@ impl<'a> PrTracker<'a> {
         }
     }
 
-    fn create_draft(&mut self, repo: &Path, branch: &str, goal: &str, sink: &LogSink) {
+    fn create_draft(&mut self, repo: &Path, branch: &str, _goal: &str, sink: &LogSink) {
         if let Err(e) = pr::push(repo, branch, true) {
             sink.note(&format!("✗ push failed: {e}"));
             self.create_failed = true;
             return;
         }
-        let title: String = goal
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or("kobito run")
-            .chars()
-            .take(72)
-            .collect();
-        let body = format!(
-            "Automated draft PR opened by kobito.\n\n## Goal\n\n{}\n",
-            goal.trim()
-        );
+        let title = self.pending_title.clone();
+        let body = self.pending_body.clone();
         match pr::create(repo, &self.base, branch, &title, &body, true) {
             Ok(url) => {
                 sink.note(&format!("✓ draft PR: {url}"));
@@ -476,6 +496,11 @@ async fn finalize_run(
         .get("ready_for_review")
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
+    let pr_title = v
+        .get("pr_title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .filter(|s| !s.is_empty());
     let pr_body = v
         .get("pr_body")
         .and_then(|x| x.as_str())
@@ -484,12 +509,12 @@ async fn finalize_run(
     if !summary.is_empty() {
         sink.note(&format!("finalize: agent says — {summary}"));
     }
-    if let Some(body) = pr_body {
-        if let Err(e) = pr::edit_body(repo, &url, &body) {
+    if pr_title.is_some() || pr_body.is_some() {
+        if let Err(e) = pr::edit(repo, &url, pr_title.as_deref(), pr_body.as_deref()) {
             sink.note(&format!("✗ gh pr edit failed: {e}"));
             return;
         }
-        sink.note("✓ PR description updated");
+        sink.note("✓ PR title/description updated");
     }
     if ready {
         match pr::mark_ready(repo, &url) {
@@ -510,6 +535,72 @@ fn confirm_finalize() -> bool {
         .default(false)
         .interact()
         .unwrap_or(false)
+}
+
+/// Wrapper around `suggest_pr_metadata` that logs progress and falls
+/// back to a generic title + the goal-as-body when the agent fails.
+async fn ask_pr_metadata(
+    agent: &dyn Agent,
+    repo: &Path,
+    goal: &str,
+    sink: &LogSink,
+) -> (String, String) {
+    sink.note("asking agent for draft PR title and description");
+    match suggest_pr_metadata(agent, repo, goal).await {
+        Ok((title, body)) => {
+            sink.note(&format!("✓ draft PR title: {title}"));
+            (title, body)
+        }
+        Err(e) => {
+            sink.note(&format!(
+                "✗ PR metadata suggestion failed: {e}; falling back to generic title"
+            ));
+            (
+                "kobito run".to_string(),
+                format!("kobito is working on:\n\n{}", goal.trim()),
+            )
+        }
+    }
+}
+
+/// Ask the agent for a short PR title + body to use for the draft PR
+/// kobito opens at run start. We do this *once* per run (before the
+/// first commit) so the GitHub PR list shows something meaningful from
+/// the start; the finalize phase can replace both later.
+async fn suggest_pr_metadata(
+    agent: &dyn Agent,
+    repo: &Path,
+    goal: &str,
+) -> Result<(String, String)> {
+    let prompt = format!(
+        "Suggest a draft GitHub Pull Request title and body for the goal below.\n\n\
+The PR is being opened automatically at the **start** of an autonomous kobito \
+run, before any commits land — the body will be rewritten by the agent during \
+finalize. Keep this initial pair short and factual; describe what kobito will \
+be working on, not what it has done.\n\n\
+Reply with EXACTLY one JSON object, nothing else (no prose, no fence):\n\n\
+{{\"title\": \"<≤72 chars, conventional-commit style headline>\",\n\
+\"body\": \"<2-4 line markdown summary stating the goal in your own words>\"}}\n\n\
+## Goal\n\n{goal}\n",
+        goal = goal.trim(),
+    );
+    let raw = agent::run_oneshot(agent, repo, &prompt).await?;
+    let body_str = agent::strip_code_fence(raw.trim());
+    let v: serde_json::Value = serde_json::from_str(&body_str)
+        .with_context(|| format!("agent reply was not valid JSON: {body_str}"))?;
+    let title: String = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect())
+        .filter(|s: &String| !s.is_empty())
+        .unwrap_or_else(|| "kobito run".to_string());
+    let body: String = v
+        .get("body")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("kobito is working on:\n\n{}", goal.trim()));
+    Ok((title, body))
 }
 
 fn truncate_for_finalize(s: &str) -> String {
