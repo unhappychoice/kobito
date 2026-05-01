@@ -95,6 +95,117 @@ fn run_gh<S: AsRef<str>>(repo: &Path, args: &[S]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-pr-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    fn init_bare(label: &str) -> TempDir {
+        let dir = unique_dir(label);
+        git(&dir, &["init", "-q", "--bare", "-b", "main"]);
+        TempDir(dir)
+    }
+
+    fn init_repo_with_remote(label: &str, remote_url: &Path) -> TempDir {
+        let dir = unique_dir(label);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        git(&dir, &["commit", "--allow-empty", "-m", "init"]);
+        git(
+            &dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote_url.to_str().expect("utf8 path"),
+            ],
+        );
+        TempDir(dir)
+    }
+
+    #[test]
+    fn push_succeeds_against_local_bare_remote() {
+        let bare = init_bare("push-ok");
+        let repo = init_repo_with_remote("push-ok-src", &bare);
+        push(&repo, "main", false).expect("push should succeed");
+
+        let out = Command::new("git")
+            .current_dir(&*bare)
+            .args(["rev-parse", "main"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "remote should now have main");
+    }
+
+    #[test]
+    fn push_with_set_upstream_creates_tracking() {
+        let bare = init_bare("push-u");
+        let repo = init_repo_with_remote("push-u-src", &bare);
+        push(&repo, "main", true).expect("push -u should succeed");
+
+        let out = Command::new("git")
+            .current_dir(&*repo)
+            .args(["rev-parse", "--abbrev-ref", "main@{u}"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "upstream should be set");
+        let upstream = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(upstream, "origin/main");
+    }
+
+    #[test]
+    fn push_fails_when_remote_missing() {
+        let dir = unique_dir("push-fail");
+        let dir = TempDir(dir);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "Test"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        git(&dir, &["commit", "--allow-empty", "-m", "init"]);
+
+        let err = push(&dir, "main", false).unwrap_err().to_string();
+        assert!(
+            err.contains("git push failed"),
+            "expected git push failure message, got: {err}",
+        );
+    }
 
     #[test]
     fn push_args_with_upstream_includes_dash_u() {
