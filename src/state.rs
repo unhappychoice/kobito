@@ -29,6 +29,16 @@ pub struct RunMeta {
     pub branch: String,
     pub goal: String,
     pub agent: String,
+    /// URL of the draft PR opened for this run, if any. Persisted so
+    /// `kobito resume` can push to the same PR instead of opening a
+    /// duplicate. Older meta files without this field deserialize to
+    /// `None`.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// Branch this run was started from (the branch we'll target as
+    /// the PR base). Defaults to "main" for older meta files.
+    #[serde(default)]
+    pub base_branch: Option<String>,
 }
 
 pub fn state_root() -> PathBuf {
@@ -209,6 +219,8 @@ mod tests {
             branch: "feature/x".to_string(),
             goal: "do thing".to_string(),
             agent: "claude_code".to_string(),
+            pr_url: None,
+            base_branch: None,
         }
     }
 

@@ -131,6 +131,74 @@ pub fn save_prompt(prompts_dir: &Path, iteration: u32, body: &str) -> Result<()>
     Ok(())
 }
 
+pub fn build_finalize_prompt(goal: &str, diff: &str, round: u32, max_rounds: u32) -> String {
+    format!(
+        "\
+# Finalize this kobito run — round {round} / {max_rounds}
+
+The user just hit Ctrl+C and asked to wrap the run up by handing the \
+PR to a human reviewer. The orchestrator is now driving a \
+**review-fix-check loop** that calls you up to {max_rounds} times. The goal \
+is to land on `ready_for_review: true` — not to give up. Each round you \
+reduce the gap; do not declare defeat just because you didn't finish in \
+one shot.
+
+## What to do
+
+1. **Read the full branch diff** (below) the same way a reviewer would: \
+   look for half-finished refactors, untested new paths, debug prints, \
+   `TODO(me)` notes, formatting drift, dead code.
+2. **Run the project's quality gates** — whatever AGENTS.md / CLAUDE.md \
+   describes for this repo. Tests, linter, formatter, type-check. Run \
+   them, don't guess.
+3. **Fix anything broken or ugly.** You CAN edit files; the orchestrator \
+   will stage everything you change and turn it into a single \
+   `chore(finalize): …` commit on this branch before opening the PR \
+   for review. Re-run the gates until they pass.
+4. **Write the PR description** based on the (possibly amended) branch \
+   diff. The PR title and body kobito drafted at run start are \
+   placeholders; you are replacing both.
+
+If a gate fails this round and you can't fix it cleanly, say so in \
+`summary` and set `ready_for_review: false` — the orchestrator will \
+call you again with the updated diff so you can keep at it. Only the \
+final round (or genuine impossibility) should leave the PR in draft.
+
+## Original goal
+
+{goal}
+
+## Full branch diff (pre-review)
+
+```diff
+{diff}
+```
+
+## Your final response — strict format
+
+Reply with **exactly one JSON object**, nothing else (no prose, no fence):
+
+```
+{{
+  \"ready_for_review\": <bool>,
+  \"pr_title\": \"<short PR title, ≤72 chars, conventional-commit style>\",
+  \"pr_body\": \"<markdown PR description: Summary section, Test plan checklist describing the gates you ran, any follow-ups>\",
+  \"summary\": \"<one-line note for kobito's own log — mention if you fixed anything during review>\"
+}}
+```
+
+- Set `ready_for_review` to `true` only when (a) the gates pass and (b) \
+  the branch diff is coherent enough that a human reviewer would not \
+  waste their time on it. Otherwise set it to `false` and explain why \
+  in `summary`.
+- The JSON is the only signal kobito parses. Discussing the field names \
+  in earlier output is fine; only the *final* message is read.
+",
+        goal = goal.trim(),
+        diff = diff,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +325,45 @@ mod tests {
         let body = fs::read_to_string(&path).unwrap();
         assert_eq!(body, "hello body");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_prompt_includes_goal_diff_and_json_contract() {
+        let out = build_finalize_prompt("ship the feature", "diff body", 1, 5);
+        assert!(out.contains("# Finalize this kobito run"));
+        assert!(out.contains("ship the feature"));
+        assert!(out.contains("diff body"));
+        assert!(out.contains("\"ready_for_review\""));
+        assert!(out.contains("\"pr_body\""));
+        assert!(out.contains("\"summary\""));
+    }
+
+    #[test]
+    fn finalize_prompt_trims_goal() {
+        let out = build_finalize_prompt("  padded  \n\n", "diff", 1, 5);
+        assert!(out.contains("padded"));
+        assert!(!out.contains("  padded  "));
+    }
+
+    #[test]
+    fn finalize_prompt_instructs_agent_to_review_fix_and_run_gates() {
+        let out = build_finalize_prompt("g", "d", 1, 5);
+        // The release-readiness pass should explicitly cover review,
+        // fix, and quality gates — not just "write a PR description".
+        assert!(out.to_lowercase().contains("quality gate"));
+        assert!(out.to_lowercase().contains("fix"));
+        assert!(out.contains("chore(finalize)"));
+    }
+
+    #[test]
+    fn finalize_prompt_advertises_round_count_and_loop_intent() {
+        let out = build_finalize_prompt("g", "d", 2, 5);
+        // Agent should know it's mid-loop and the orchestrator will
+        // call again — so it doesn't preemptively give up with
+        // ready_for_review = false.
+        assert!(out.contains("round 2 / 5"));
+        assert!(out.to_lowercase().contains("review-fix-check"));
+        assert!(out.to_lowercase().contains("call you again"));
     }
 
     #[test]

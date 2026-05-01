@@ -50,6 +50,26 @@ pub fn current_branch(repo: &Path) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?.trim().to_string())
 }
 
+/// Resolve the repository's default branch on `origin` (the target a PR
+/// should be opened against). Falls back to `main` when origin/HEAD is
+/// not configured locally — `current_branch` is deliberately *not*
+/// used as a fallback because kobito itself may be running from a
+/// previously-generated kobito branch, which is never the right PR base.
+pub fn default_remote_branch(repo: &Path) -> String {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output();
+    if let Ok(out) = out
+        && out.status.success()
+        && let Ok(s) = String::from_utf8(out.stdout)
+        && let Some(name) = s.trim().strip_prefix("refs/remotes/origin/")
+    {
+        return name.to_string();
+    }
+    "main".to_string()
+}
+
 pub fn create_and_checkout(repo: &Path, branch: &str) -> Result<()> {
     run(repo, &["checkout", "-b", branch])
 }
@@ -76,6 +96,20 @@ pub fn diff_staged(repo: &Path) -> Result<String> {
         .current_dir(repo)
         .args(["diff", "--cached"])
         .output()?;
+    Ok(String::from_utf8(out.stdout)?)
+}
+
+pub fn diff_against(repo: &Path, base: &str) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["diff", &format!("{base}...HEAD")])
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "git diff {base}...HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     Ok(String::from_utf8(out.stdout)?)
 }
 

@@ -16,6 +16,11 @@ pub struct AgentOutcome {
     pub natural_stop: bool,
     pub task_complete: bool,
     pub usage: Usage,
+    /// The final assistant `Message` text, exactly as the agent emitted it.
+    /// Callers that need a richer JSON contract than `natural_stop` /
+    /// `task_complete` (e.g. the finalize phase that asks for a PR body)
+    /// can parse this directly.
+    pub final_message: Option<String>,
 }
 
 pub async fn run_streamed(
@@ -99,6 +104,7 @@ pub async fn run_streamed(
         natural_stop,
         task_complete,
         usage,
+        final_message: last_message,
     })
 }
 
@@ -128,7 +134,7 @@ fn parse_stop_signal(text: Option<&str>) -> (bool, bool) {
     )
 }
 
-fn strip_code_fence(s: &str) -> String {
+pub fn strip_code_fence(s: &str) -> String {
     let mut t = s.trim();
     if let Some(rest) = t.strip_prefix("```json").or_else(|| t.strip_prefix("```")) {
         t = rest.trim();

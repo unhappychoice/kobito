@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use std::fs;
 use std::io::IsTerminal;
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::Agent;
 use crate::cli::{ContinuousArgs, ResumeArgs};
-use crate::{agent, branch, commit, git, logger::LogSink, notes, preset, prompt, state, ui};
+use crate::{agent, branch, commit, git, logger::LogSink, notes, pr, preset, prompt, state, ui};
 
 pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let agent_impl = agent::from_name(&args.agent)?;
@@ -34,6 +34,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     let project = state::project_paths(id.clone())?;
     let run = state::new_run(project.clone())?;
 
+    let base_branch = git::default_remote_branch(&repo);
     let suggested = branch::suggest(&*agent_impl, &repo, &goal)
         .await
         .unwrap_or_else(|_| format!("kobito/{}", slugify(&goal)));
@@ -44,27 +45,41 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     );
     git::create_and_checkout(&repo, &branch)?;
 
-    state::write_run_meta(
-        &run,
-        &state::RunMeta {
-            run_id: run.timestamp.clone(),
-            started_at: Utc::now().to_rfc3339(),
-            branch: branch.clone(),
-            goal: goal.clone(),
-            agent: args.agent.clone(),
-        },
-    )?;
+    let meta = state::RunMeta {
+        run_id: run.timestamp.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        branch: branch.clone(),
+        goal: goal.clone(),
+        agent: args.agent.clone(),
+        pr_url: None,
+        base_branch: Some(base_branch.clone()),
+    };
+    state::write_run_meta(&run, &meta)?;
 
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&run.log_file, Some(bar.clone()))?;
-    let cancelled = install_cancel_handler();
+    let cancel = install_cancel_handler();
 
     sink.note(&format!("kobito start: {}", first_line(&goal)));
     sink.note(&format!(
         "project: {id}  branch: {branch}  run: {}",
         run.timestamp
     ));
+
+    let mut pr_tracker = if remote.is_some() {
+        let (title, body) = ask_pr_metadata(&*agent_impl, &repo, &goal, &sink).await;
+        Some(PrTracker::new(
+            base_branch.clone(),
+            &run,
+            meta.clone(),
+            title,
+            body,
+        ))
+    } else {
+        sink.note("no git remote configured — skipping PR creation and pushes");
+        None
+    };
 
     let completed = run_iterations(LoopArgs {
         agent: &*agent_impl,
@@ -75,11 +90,32 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        cancelled,
+        cancelled: cancel.cancelled.clone(),
+        finalize_requested: cancel.finalize_requested.clone(),
+        pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
     bar.finish_and_clear();
+    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
+    {
+        if let Some(tracker) = pr_tracker.as_mut() {
+            finalize_run(
+                &*agent_impl,
+                &repo,
+                &branch,
+                &goal,
+                &base_branch,
+                tracker,
+                &sink,
+                cancel.cancelled.clone(),
+            )
+            .await;
+        } else {
+            sink.note("finalize requested — no PR open, exiting cleanly");
+        }
+    }
+
     sink.note(&format!(
         "done — {completed} commits on {branch} (run dir: {})",
         run.run_dir.display()
@@ -111,21 +147,21 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     if prev_notes.exists() {
         fs::copy(&prev_notes, state::notes_path(&new_run))?;
     }
-    state::write_run_meta(
-        &new_run,
-        &state::RunMeta {
-            run_id: new_run.timestamp.clone(),
-            started_at: Utc::now().to_rfc3339(),
-            branch: prev_meta.branch.clone(),
-            goal: prev_meta.goal.clone(),
-            agent: prev_meta.agent.clone(),
-        },
-    )?;
+    let new_meta = state::RunMeta {
+        run_id: new_run.timestamp.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        branch: prev_meta.branch.clone(),
+        goal: prev_meta.goal.clone(),
+        agent: prev_meta.agent.clone(),
+        pr_url: prev_meta.pr_url.clone(),
+        base_branch: prev_meta.base_branch.clone(),
+    };
+    state::write_run_meta(&new_run, &new_meta)?;
 
     let _cursor = ui::CursorGuard::new();
     let bar = ui::make_status_bar();
     let sink = LogSink::open(&new_run.log_file, Some(bar.clone()))?;
-    let cancelled = install_cancel_handler();
+    let cancel = install_cancel_handler();
 
     sink.note(&format!(
         "kobito resume from {target_id}: {}",
@@ -136,6 +172,29 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         prev_meta.branch, new_run.timestamp
     ));
 
+    let resume_base = prev_meta
+        .base_branch
+        .clone()
+        .unwrap_or_else(|| git::default_remote_branch(&repo));
+    let mut pr_tracker = if remote.is_some() {
+        let (title, body) = if new_meta.pr_url.is_none() {
+            ask_pr_metadata(&*agent_impl, &repo, &prev_meta.goal, &sink).await
+        } else {
+            // PR already exists; title/body are unused for this run.
+            (String::new(), String::new())
+        };
+        Some(PrTracker::new(
+            resume_base.clone(),
+            &new_run,
+            new_meta.clone(),
+            title,
+            body,
+        ))
+    } else {
+        sink.note("no git remote configured — skipping PR creation and pushes");
+        None
+    };
+
     let completed = run_iterations(LoopArgs {
         agent: &*agent_impl,
         repo: &repo,
@@ -145,11 +204,32 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         max_iterations: args.max_iterations,
         max_failures: args.max_failures,
         sink: &sink,
-        cancelled,
+        cancelled: cancel.cancelled.clone(),
+        finalize_requested: cancel.finalize_requested.clone(),
+        pr_tracker: pr_tracker.as_mut(),
     })
     .await?;
 
     bar.finish_and_clear();
+    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
+    {
+        if let Some(tracker) = pr_tracker.as_mut() {
+            finalize_run(
+                &*agent_impl,
+                &repo,
+                &prev_meta.branch,
+                &prev_meta.goal,
+                &resume_base,
+                tracker,
+                &sink,
+                cancel.cancelled.clone(),
+            )
+            .await;
+        } else {
+            sink.note("finalize requested — no PR open, exiting cleanly");
+        }
+    }
+
     sink.note(&format!(
         "done — {completed} commits on {} (run dir: {})",
         prev_meta.branch,
@@ -158,7 +238,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     Ok(())
 }
 
-struct LoopArgs<'a> {
+struct LoopArgs<'a, 'b> {
     agent: &'a dyn Agent,
     repo: &'a Path,
     run: &'a state::RunPaths,
@@ -168,9 +248,91 @@ struct LoopArgs<'a> {
     max_failures: u32,
     sink: &'a LogSink,
     cancelled: Arc<AtomicBool>,
+    finalize_requested: Arc<AtomicBool>,
+    pr_tracker: Option<&'a mut PrTracker<'b>>,
 }
 
-async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
+pub struct PrTracker<'a> {
+    base: String,
+    run: &'a state::RunPaths,
+    meta: state::RunMeta,
+    /// Title to use when the draft PR is opened. Generated upfront by
+    /// the agent so the GitHub PR list shows something meaningful from
+    /// the very first commit; the finalize phase can replace it later.
+    pending_title: String,
+    /// Body for the initial draft PR. Same story as `pending_title` —
+    /// agent-suggested, replaced by the finalize phase.
+    pending_body: String,
+    /// Set after a `gh pr create` failure so we don't pester the user
+    /// with the same error on every subsequent commit. From then on we
+    /// just push (the local branch is the source of truth; the user
+    /// can open the PR by hand).
+    create_failed: bool,
+}
+
+impl<'a> PrTracker<'a> {
+    pub fn new(
+        base: String,
+        run: &'a state::RunPaths,
+        meta: state::RunMeta,
+        pending_title: String,
+        pending_body: String,
+    ) -> Self {
+        Self {
+            base,
+            run,
+            meta,
+            pending_title,
+            pending_body,
+            create_failed: false,
+        }
+    }
+
+    /// Push the working branch (creating the draft PR on first call).
+    /// All errors are reported via `sink` and swallowed — push/PR
+    /// failures must not abort the surrounding loop.
+    pub fn on_commit(&mut self, repo: &Path, branch: &str, sink: &LogSink) {
+        if self.meta.pr_url.is_some() || self.create_failed {
+            self.push_existing(repo, branch, sink);
+        } else {
+            self.create_draft(repo, branch, sink);
+        }
+    }
+
+    fn create_draft(&mut self, repo: &Path, branch: &str, sink: &LogSink) {
+        if let Err(e) = pr::push(repo, branch, true) {
+            sink.note(&format!("✗ push failed: {e}"));
+            self.create_failed = true;
+            return;
+        }
+        let title = self.pending_title.clone();
+        let body = self.pending_body.clone();
+        match pr::create(repo, &self.base, branch, &title, &body, true) {
+            Ok(url) => {
+                sink.note(&format!("✓ PR opened (draft): {url}"));
+                self.meta.pr_url = Some(url);
+                if let Err(e) = state::write_run_meta(self.run, &self.meta) {
+                    sink.note(&format!("✗ persist meta failed: {e}"));
+                }
+            }
+            Err(e) => {
+                sink.note(&format!(
+                    "✗ draft PR create failed: {e} (will keep pushing without retrying)"
+                ));
+                self.create_failed = true;
+            }
+        }
+    }
+
+    fn push_existing(&self, repo: &Path, branch: &str, sink: &LogSink) {
+        let set_upstream = self.meta.pr_url.is_none();
+        if let Err(e) = pr::push(repo, branch, set_upstream) {
+            sink.note(&format!("✗ push failed: {e}"));
+        }
+    }
+}
+
+async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
@@ -178,6 +340,11 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
     for iteration in 1..=args.max_iterations {
         if args.cancelled.load(Ordering::SeqCst) {
             args.sink.note("interrupted by user");
+            break;
+        }
+        if args.finalize_requested.load(Ordering::SeqCst) {
+            args.sink
+                .note("finalize requested (Ctrl+C) — exiting iteration loop");
             break;
         }
         args.sink.note(&format!(
@@ -232,6 +399,10 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
                     .note(&format!("  tokens — {}", format_usage(&out.usage)));
                 completed += 1;
 
+                if let Some(tracker) = args.pr_tracker.as_deref_mut() {
+                    tracker.on_commit(args.repo, args.branch, args.sink);
+                }
+
                 let notes_path = state::notes_path(args.run);
                 if let Err(e) = notes::append_learning(
                     args.agent,
@@ -273,11 +444,374 @@ async fn run_iterations(args: LoopArgs<'_>) -> Result<u32> {
     Ok(completed)
 }
 
-fn install_cancel_handler() -> Arc<AtomicBool> {
+/// Cap on the review-fix-check loop. High enough that the agent can
+/// chase a couple of stubborn lints / failing tests across rounds, but
+/// low enough that a confused or stuck agent doesn't burn an unbounded
+/// amount of time.
+const MAX_FINALIZE_ROUNDS: u32 = 5;
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_run(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    base_branch: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
+) {
+    let url = match tracker.meta.pr_url.clone() {
+        Some(url) => url,
+        None => {
+            sink.note("finalize: no PR URL recorded; skipping");
+            return;
+        }
+    };
+    if !confirm_finalize() {
+        sink.note("finalize: declined; PR left in draft");
+        return;
+    }
+    sink.note(&format!(
+        "finalize: review-fix-check loop, up to {MAX_FINALIZE_ROUNDS} rounds, until ready_for_review"
+    ));
+
+    let mut last_title: Option<String> = None;
+    let mut last_body: Option<String> = None;
+
+    for round in 1..=MAX_FINALIZE_ROUNDS {
+        if cancelled.load(Ordering::SeqCst) {
+            sink.note("finalize: cancelled");
+            return;
+        }
+        sink.note(&format!(
+            "── finalize round {round} / {MAX_FINALIZE_ROUNDS} ──"
+        ));
+
+        let outcome = match run_finalize_round(
+            agent,
+            repo,
+            branch,
+            goal,
+            base_branch,
+            tracker,
+            sink,
+            cancelled.clone(),
+            round,
+        )
+        .await
+        {
+            Some(o) => o,
+            None => return,
+        };
+
+        if let Some(t) = outcome.title {
+            last_title = Some(t);
+        }
+        if let Some(b) = outcome.body {
+            last_body = Some(b);
+        }
+
+        if outcome.ready {
+            apply_pr_metadata(
+                repo,
+                &url,
+                last_title.as_deref(),
+                last_body.as_deref(),
+                sink,
+            );
+            match pr::mark_ready(repo, &url) {
+                Ok(_) => sink.note(&format!("✓ PR marked ready for review: {url}")),
+                Err(e) => sink.note(&format!("✗ gh pr ready failed: {e}")),
+            }
+            return;
+        }
+        sink.note(&format!(
+            "finalize: not ready yet (round {round}/{MAX_FINALIZE_ROUNDS}); continuing"
+        ));
+    }
+
+    sink.note(&format!(
+        "finalize: gave up after {MAX_FINALIZE_ROUNDS} rounds; leaving PR in draft for manual review"
+    ));
+    apply_pr_metadata(
+        repo,
+        &url,
+        last_title.as_deref(),
+        last_body.as_deref(),
+        sink,
+    );
+}
+
+struct FinalizeRoundOutcome {
+    ready: bool,
+    title: Option<String>,
+    body: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_finalize_round(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    base_branch: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+    cancelled: Arc<AtomicBool>,
+    round: u32,
+) -> Option<FinalizeRoundOutcome> {
+    let diff = match git::diff_against(repo, base_branch) {
+        Ok(d) => d,
+        Err(e) => {
+            sink.note(&format!("finalize: git diff failed: {e}"));
+            return None;
+        }
+    };
+    let prompt_body = prompt::build_finalize_prompt(
+        goal,
+        &truncate_for_finalize(&diff),
+        round,
+        MAX_FINALIZE_ROUNDS,
+    );
+    let outcome = match agent::run(agent, repo, &prompt_body, sink, cancelled.clone()).await {
+        Ok(o) => o,
+        Err(e) => {
+            sink.note(&format!("finalize: agent failed: {e}"));
+            return None;
+        }
+    };
+
+    if let Err(e) = commit_finalize_fixes(agent, repo, branch, goal, tracker, sink).await {
+        sink.note(&format!("✗ finalize commit failed: {e}; stopping"));
+        return None;
+    }
+    if cancelled.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    let text = outcome.final_message.as_deref()?;
+    let body_str = agent::strip_code_fence(text.trim());
+    let v: serde_json::Value = match serde_json::from_str(&body_str) {
+        Ok(v) => v,
+        Err(e) => {
+            sink.note(&format!(
+                "finalize: agent reply was not valid JSON ({e}); stopping"
+            ));
+            return None;
+        }
+    };
+    let ready = v
+        .get("ready_for_review")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let title = v
+        .get("pr_title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .filter(|s| !s.is_empty());
+    let body = v
+        .get("pr_body")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    if let Some(s) = v.get("summary").and_then(|x| x.as_str()) {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            sink.note(&format!("finalize: agent says — {trimmed}"));
+        }
+    }
+    Some(FinalizeRoundOutcome { ready, title, body })
+}
+
+fn apply_pr_metadata(
+    repo: &Path,
+    url: &str,
+    title: Option<&str>,
+    body: Option<&str>,
+    sink: &LogSink,
+) {
+    if title.is_none() && body.is_none() {
+        return;
+    }
+    match pr::edit(repo, url, title, body) {
+        Ok(_) => sink.note("✓ PR title/description updated"),
+        Err(e) => sink.note(&format!("✗ gh pr edit failed: {e}")),
+    }
+}
+
+async fn commit_finalize_fixes(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    tracker: &mut PrTracker<'_>,
+    sink: &LogSink,
+) -> Result<()> {
+    git::stage_all(repo)?;
+    if !git::has_staged_changes(repo)? {
+        return Ok(());
+    }
+    let diff = git::diff_staged(repo)?;
+    let style = git::recent_commit_messages(repo, 20).unwrap_or_default();
+    let raw = commit::generate_message(agent, repo, &diff, goal, &style).await?;
+    let msg = ensure_finalize_prefix(&raw);
+    git::commit(repo, &msg)?;
+    sink.note(&format!("✓ finalize commit: {}", first_line(&msg)));
+    tracker.on_commit(repo, branch, sink);
+    Ok(())
+}
+
+/// Enforce a `chore(finalize): …` subject on commits made during the
+/// review-fix loop, regardless of what the commit-message agent
+/// generated. Strips any pre-existing `<type>(<scope>): ` Conventional
+/// Commits prefix so the result reads cleanly rather than nesting.
+fn ensure_finalize_prefix(msg: &str) -> String {
+    let trimmed = msg.trim_start();
+    if trimmed.starts_with("chore(finalize)") {
+        return trimmed.to_string();
+    }
+    let head_end = trimmed.find('\n').unwrap_or(trimmed.len());
+    let (subject, rest) = trimmed.split_at(head_end);
+    let body = subject_without_conventional_prefix(subject);
+    format!("chore(finalize): {body}{rest}")
+}
+
+fn subject_without_conventional_prefix(subject: &str) -> &str {
+    let Some((head, rest)) = subject.split_once(": ") else {
+        return subject;
+    };
+    let typ = match head.split_once('(') {
+        Some((typ, scope)) if scope.ends_with(')') => typ,
+        Some(_) => return subject,
+        None => head,
+    };
+    if typ.is_empty() || !typ.chars().all(|c| c.is_ascii_lowercase()) {
+        return subject;
+    }
+    rest
+}
+
+fn confirm_finalize() -> bool {
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    use std::io::{self, Write};
+    let prompt = crate::logger::style_kobito_prompt(
+        " Finalize PR for review? Agent will review the diff, fix any issues, run quality gates (up to 5 rounds), then rewrite title/body and mark ready. [y/N] ",
+    );
+    print!("{prompt}");
+    let _ = io::stdout().flush();
+    let mut buf = String::new();
+    if io::stdin().read_line(&mut buf).is_err() {
+        return false;
+    }
+    matches!(buf.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Wrapper around `suggest_pr_metadata` that logs progress and falls
+/// back to a generic title + the goal-as-body when the agent fails.
+async fn ask_pr_metadata(
+    agent: &dyn Agent,
+    repo: &Path,
+    goal: &str,
+    sink: &LogSink,
+) -> (String, String) {
+    sink.note("asking agent for draft PR title and description");
+    match suggest_pr_metadata(agent, repo, goal).await {
+        Ok((title, body)) => {
+            sink.note(&format!("✓ PR title drafted: {title}"));
+            (title, body)
+        }
+        Err(e) => {
+            sink.note(&format!(
+                "✗ PR metadata suggestion failed: {e}; falling back to generic title"
+            ));
+            (
+                "kobito run".to_string(),
+                format!("kobito is working on:\n\n{}", goal.trim()),
+            )
+        }
+    }
+}
+
+/// Ask the agent for a short PR title + body to use for the draft PR
+/// kobito opens at run start. We do this *once* per run (before the
+/// first commit) so the GitHub PR list shows something meaningful from
+/// the start; the finalize phase can replace both later.
+async fn suggest_pr_metadata(
+    agent: &dyn Agent,
+    repo: &Path,
+    goal: &str,
+) -> Result<(String, String)> {
+    let prompt = format!(
+        "Suggest a draft GitHub Pull Request title and body for the goal below.\n\n\
+The PR is being opened automatically at the **start** of an autonomous kobito \
+run, before any commits land — the body will be rewritten by the agent during \
+finalize. Keep this initial pair short and factual; describe what kobito will \
+be working on, not what it has done.\n\n\
+Reply with EXACTLY one JSON object, nothing else (no prose, no fence):\n\n\
+{{\"title\": \"<≤72 chars, conventional-commit style headline>\",\n\
+\"body\": \"<2-4 line markdown summary stating the goal in your own words>\"}}\n\n\
+## Goal\n\n{goal}\n",
+        goal = goal.trim(),
+    );
+    let raw = agent::run_oneshot(agent, repo, &prompt).await?;
+    let body_str = agent::strip_code_fence(raw.trim());
+    let v: serde_json::Value = serde_json::from_str(&body_str)
+        .with_context(|| format!("agent reply was not valid JSON: {body_str}"))?;
+    let title: String = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect())
+        .filter(|s: &String| !s.is_empty())
+        .unwrap_or_else(|| "kobito run".to_string());
+    let body: String = v
+        .get("body")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("kobito is working on:\n\n{}", goal.trim()));
+    Ok((title, body))
+}
+
+fn truncate_for_finalize(s: &str) -> String {
+    const MAX: usize = 20_000;
+    let total = s.chars().count();
+    if total <= MAX {
+        return s.to_string();
+    }
+    let keep = MAX / 2;
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(total - keep).collect();
+    format!("{head}\n…\n[diff truncated]\n…\n{tail}")
+}
+
+/// Two-stage cancellation: the first Ctrl+C raises the
+/// `finalize_requested` flag (a soft signal for the run loop to wrap
+/// up after the current iteration commits), and any subsequent Ctrl+C
+/// raises `cancelled` (a hard signal that propagates into
+/// `agent::run` and aborts immediately).
+pub struct CancelState {
+    pub finalize_requested: Arc<AtomicBool>,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+fn install_cancel_handler() -> CancelState {
+    let finalize_requested = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = cancelled.clone();
-    let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
-    cancelled
+    let f = finalize_requested.clone();
+    let c = cancelled.clone();
+    let _ = ctrlc::set_handler(move || {
+        if !f.swap(true, Ordering::SeqCst) {
+            // first press — soft signal, let in-flight iteration finish
+        } else {
+            c.store(true, Ordering::SeqCst);
+        }
+    });
+    CancelState {
+        finalize_requested,
+        cancelled,
+    }
 }
 
 fn pick_run_to_resume(project: &state::ProjectPaths) -> Result<String> {
@@ -334,5 +868,82 @@ fn format_count(n: u64) -> String {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_for_finalize_passes_short_input_through() {
+        assert_eq!(truncate_for_finalize("short"), "short");
+    }
+
+    #[test]
+    fn truncate_for_finalize_keeps_head_tail_and_marker_for_long_input() {
+        let head = "H".repeat(15_000);
+        let tail = "T".repeat(15_000);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = truncate_for_finalize(&input);
+        assert!(out.starts_with(&"H".repeat(10_000)));
+        assert!(out.ends_with(&"T".repeat(10_000)));
+        assert!(out.contains("[diff truncated]"));
+        assert!(!out.contains("MIDDLE"));
+    }
+
+    #[test]
+    fn truncate_for_finalize_handles_multibyte_input() {
+        let head = "あ".repeat(15_000);
+        let tail = "い".repeat(15_000);
+        let input = format!("{head}MIDDLE{tail}");
+        let out = truncate_for_finalize(&input);
+        assert!(out.starts_with(&"あ".repeat(10_000)));
+        assert!(out.ends_with(&"い".repeat(10_000)));
+        assert!(out.contains("[diff truncated]"));
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_passes_through_when_already_correct() {
+        assert_eq!(
+            ensure_finalize_prefix("chore(finalize): polish things"),
+            "chore(finalize): polish things"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_replaces_existing_conventional_prefix() {
+        assert_eq!(
+            ensure_finalize_prefix("test(notes): cover edge case"),
+            "chore(finalize): cover edge case"
+        );
+        assert_eq!(ensure_finalize_prefix("fix: oops"), "chore(finalize): oops");
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_prepends_when_no_conventional_type() {
+        assert_eq!(
+            ensure_finalize_prefix("Update foo"),
+            "chore(finalize): Update foo"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_preserves_body() {
+        let msg = "test(x): cover thing\n\nbody line\nanother";
+        assert_eq!(
+            ensure_finalize_prefix(msg),
+            "chore(finalize): cover thing\n\nbody line\nanother"
+        );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_does_not_mistake_url_colon_for_conventional() {
+        // Subjects with mixed case or `://` are not conventional commit
+        // prefixes — leave them alone (just prepend).
+        assert_eq!(
+            ensure_finalize_prefix("https://example.com is a url"),
+            "chore(finalize): https://example.com is a url"
+        );
     }
 }

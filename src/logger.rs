@@ -100,7 +100,7 @@ impl LogSink {
         {
             let _ = writeln!(f, "{json}");
         }
-        self.print(line);
+        self.print(source, line);
     }
 
     pub fn note(&self, line: &str) {
@@ -132,19 +132,27 @@ impl LogSink {
         }
     }
 
-    fn print(&self, line: &str) {
-        let raw = if self.bar.is_some() {
+    fn print(&self, source: &str, line: &str) {
+        // Once the bar is finished (e.g. we are now in the finalize
+        // phase, after `bar.finish_and_clear()`), bypass it entirely:
+        // its writer is no longer maintaining a fresh styling context,
+        // which causes the kobito BG to stop extending to end-of-line
+        // for messages emitted post-finish.
+        let with_bar = self.bar.as_ref().is_some_and(|b| !b.is_finished());
+        let raw = if with_bar {
             format!(" │ {line}")
         } else {
             line.to_string()
         };
         let styled = if self.color {
-            colorize(line, &raw)
+            colorize(source, line, &raw)
         } else {
             raw
         };
-        if let Some(bar) = &self.bar {
-            bar.println(styled);
+        if with_bar {
+            if let Some(bar) = &self.bar {
+                bar.println(styled);
+            }
         } else {
             println!("{styled}");
         }
@@ -166,10 +174,16 @@ fn format_event(event: &AgentEvent) -> Option<String> {
         AgentEvent::Message(text) => {
             let trimmed = text.trim_end_matches('\n');
             if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+                return None;
             }
+            // The final message of every iteration is a structured stop
+            // signal (`{natural_stop|task_complete, summary}`). Showing
+            // the raw JSON to the user is just noise — render the
+            // summary line on its own.
+            if let Some(summary) = extract_iteration_summary(trimmed) {
+                return Some(format!("summary: {summary}"));
+            }
+            Some(trimmed.to_string())
         }
         AgentEvent::ToolStart { tool, summary } => Some(match summary {
             Some(s) => format!("▶ {tool}: {s}"),
@@ -182,10 +196,70 @@ fn format_event(event: &AgentEvent) -> Option<String> {
                 Some(format!("✗ {tool}"))
             }
         }
-        AgentEvent::Stop { reason } => Some(format!("(stop: {reason})")),
+        // Stop reasons come from the agent CLI's transport layer
+        // (Claude Code's `result.subtype`, etc.) and are too internal
+        // to expose to the user — they leak terms like
+        // "error_during_execution" on plain Ctrl+C.
+        AgentEvent::Stop { .. } => None,
         AgentEvent::Usage(_) => None,
         AgentEvent::Other(_) => None,
     }
+}
+
+fn extract_iteration_summary(text: &str) -> Option<String> {
+    let candidates = [
+        crate::agent::strip_code_fence(text.trim()),
+        rightmost_json_object(text)?.to_string(),
+    ];
+    for body in candidates.iter() {
+        let v: serde_json::Value = match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Only treat as a stop signal if at least one of the recognised
+        // schemas is present. Otherwise a stray JSON message earlier
+        // in the conversation could swallow itself.
+        let is_stop = v.get("natural_stop").and_then(|x| x.as_bool()).is_some()
+            || v.get("task_complete").and_then(|x| x.as_bool()).is_some()
+            || v.get("ready_for_review")
+                .and_then(|x| x.as_bool())
+                .is_some();
+        if !is_stop {
+            continue;
+        }
+        let summary = v
+            .get("summary")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(no summary)");
+        return Some(summary.to_string());
+    }
+    None
+}
+
+/// Find the rightmost balanced `{...}` JSON object in `text`. Tolerates
+/// agents that prefix the structured stop signal with prose ("Done.\n\n{…}").
+/// Brace counting is naive — strings containing literal braces would
+/// confuse it — but for kobito's own JSON contract (flat object with
+/// short string values) this is good enough.
+fn rightmost_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let last = bytes.iter().rposition(|&b| b == b'}')?;
+    let mut depth = 0i32;
+    for i in (0..=last).rev() {
+        match bytes[i] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[i..=last]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Muted dark theme using 24-bit color.
@@ -204,8 +278,8 @@ fn format_event(event: &AgentEvent) -> Option<String> {
 ///
 /// Routed only through the terminal `print` path; `log.ndjson` and
 /// `events.ndjson` get the plain string.
-fn colorize(judge: &str, full: &str) -> String {
-    let (bg, fg, bold) = section_for(judge);
+fn colorize(source: &str, judge: &str, full: &str) -> String {
+    let (bg, fg, bold) = section_for(source, judge);
     let mut codes = bg.to_string();
     if let Some(fg) = fg {
         codes.push(';');
@@ -214,47 +288,77 @@ fn colorize(judge: &str, full: &str) -> String {
     if bold {
         codes.push_str(";1");
     }
-    format!("\x1b[{codes}m{full}\x1b[K\x1b[0m")
+    apply_bg_per_line(&codes, full)
 }
 
-fn section_for(line: &str) -> (&'static str, Option<&'static str>, bool) {
-    // 24-bit truecolor: 48;2;<r>;<g>;<b> for BG, 38;2;... for FG.
-    // Two BGs + one accent BG. Three FG tones.
-    const KOBITO_BG: &str = "48;2;25;30;42"; // cool slate
-    const KOBITO_FG_BRIGHT: &str = "38;2;180;200;225";
-    const KOBITO_FG_MID: &str = "38;2;130;150;180";
-    const BODY_BG: &str = "48;2;18;19;22"; // near-black
-    const BODY_FG_DIM: &str = "38;2;90;95;105";
-    const ERROR_BG: &str = "48;2;50;22;26"; // muted maroon
-    const ERROR_FG: &str = "38;2;200;165;170";
+/// Apply the same SGR escape to every line of `full`, so the chosen
+/// background extends to end-of-line even when the content contains
+/// embedded newlines (a single `\x1b[K` only paints up to the first
+/// newline).
+fn apply_bg_per_line(codes: &str, full: &str) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for line in full.split('\n') {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        out.push_str("\x1b[");
+        out.push_str(codes);
+        out.push('m');
+        out.push_str(line);
+        out.push_str("\x1b[K");
+    }
+    out.push_str("\x1b[0m");
+    out
+}
 
-    if line.starts_with("kobito start")
-        || line.starts_with("kobito resume")
-        || line.starts_with("project:")
-        || line.starts_with("═══")
-        || line.starts_with("──")
-        || line.starts_with("=== task")
-        || line.starts_with("✓ committed")
-        || line.starts_with("✓ PR")
-    {
-        // major header — kobito BG, bright FG, bold
-        (KOBITO_BG, Some(KOBITO_FG_BRIGHT), true)
-    } else if line.starts_with("done ")
-        || line.starts_with("  tokens —")
-        || line.starts_with("agent reported")
-    {
-        // summary / tokens / sentinel — kobito BG, mid FG
-        (KOBITO_BG, Some(KOBITO_FG_MID), false)
-    } else if line.starts_with("✗") || line.starts_with("interrupting") {
-        // error / cancellation — muted maroon
-        (ERROR_BG, Some(ERROR_FG), true)
-    } else if line.starts_with("▶") {
+const KOBITO_BG: &str = "48;2;25;30;42"; // cool slate
+const KOBITO_FG_BRIGHT: &str = "38;2;180;200;225";
+const KOBITO_FG_MID: &str = "38;2;130;150;180";
+const BODY_BG: &str = "48;2;18;19;22"; // near-black
+const BODY_FG_DIM: &str = "38;2;90;95;105";
+const ERROR_BG: &str = "48;2;50;22;26"; // muted maroon
+const ERROR_FG: &str = "38;2;200;165;170";
+
+/// Pick a (bg, fg, bold) triple for one rendered line. Routing is
+/// **source-first**: anything kobito itself emitted lives on the cool
+/// slate background; agent stream lives on near-black. Within each
+/// channel a few prefix patterns adjust intensity / pick the maroon
+/// accent for failures.
+fn section_for(source: &str, line: &str) -> (&'static str, Option<&'static str>, bool) {
+    // Failures are always maroon, regardless of source.
+    if line.starts_with('✗') || line.starts_with("interrupting") {
+        return (ERROR_BG, Some(ERROR_FG), true);
+    }
+    if source == "kobito" {
+        let major = line.starts_with("kobito start")
+            || line.starts_with("kobito resume")
+            || line.starts_with("project:")
+            || line.starts_with("═══")
+            || line.starts_with("──")
+            || line.starts_with("=== task")
+            || line.starts_with("✓ ");
+        let fg = if major {
+            KOBITO_FG_BRIGHT
+        } else {
+            KOBITO_FG_MID
+        };
+        (KOBITO_BG, Some(fg), major)
+    } else if line.starts_with('▶') {
         // tool call — body BG, dim FG
         (BODY_BG, Some(BODY_FG_DIM), false)
     } else {
         // agent body — body BG only, terminal default FG
         (BODY_BG, None, false)
     }
+}
+
+/// Wrap a string in the kobito-channel SGR codes for use as an inline
+/// prompt (e.g. dialoguer-replacement). Unlike `colorize`, this does
+/// not emit `\x1b[K`, so the user's typed input is not painted.
+pub fn style_kobito_prompt(s: &str) -> String {
+    format!("\x1b[{KOBITO_BG};{KOBITO_FG_BRIGHT};1m{s}\x1b[0m")
 }
 
 #[cfg(test)]
@@ -326,12 +430,72 @@ mod tests {
     }
 
     #[test]
-    fn format_event_renders_stop_reason() {
-        let s = format_event(&AgentEvent::Stop {
-            reason: "natural".into(),
-        })
+    fn format_event_drops_stop_reason_entirely() {
+        assert!(
+            format_event(&AgentEvent::Stop {
+                reason: "natural".into()
+            })
+            .is_none()
+        );
+        assert!(
+            format_event(&AgentEvent::Stop {
+                reason: "error_during_execution".into()
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn format_event_renders_only_summary_when_message_is_stop_signal_json() {
+        let s = format_event(&AgentEvent::Message(
+            r#"{"natural_stop":false,"summary":"added 5 tests"}"#.into(),
+        ))
         .unwrap();
-        assert_eq!(s, "(stop: natural)");
+        assert_eq!(s, "summary: added 5 tests");
+    }
+
+    #[test]
+    fn format_event_renders_summary_for_task_complete_signal() {
+        let s = format_event(&AgentEvent::Message(
+            r#"{"task_complete":true,"summary":"wired up X"}"#.into(),
+        ))
+        .unwrap();
+        assert_eq!(s, "summary: wired up X");
+    }
+
+    #[test]
+    fn format_event_passes_through_non_stop_json_messages() {
+        let s = format_event(&AgentEvent::Message(
+            r#"{"foo":1,"summary":"unrelated"}"#.into(),
+        ))
+        .unwrap();
+        assert!(s.contains("\"foo\":1"));
+    }
+
+    #[test]
+    fn format_event_renders_summary_for_finalize_signal() {
+        let s = format_event(&AgentEvent::Message(
+            r#"{"ready_for_review":true,"pr_title":"foo","pr_body":"…","summary":"shipped X"}"#
+                .into(),
+        ))
+        .unwrap();
+        assert_eq!(s, "summary: shipped X");
+    }
+
+    #[test]
+    fn format_event_extracts_summary_when_json_is_preceded_by_prose() {
+        let raw =
+            "Iteration complete.\n\n{\"natural_stop\": false, \"summary\": \"added 3 tests\"}";
+        let s = format_event(&AgentEvent::Message(raw.into())).unwrap();
+        assert_eq!(s, "summary: added 3 tests");
+    }
+
+    #[test]
+    fn format_event_falls_back_when_summary_field_is_absent() {
+        // Agent forgot the summary field — render a placeholder rather
+        // than dumping the raw JSON.
+        let s = format_event(&AgentEvent::Message(r#"{"natural_stop": false}"#.into())).unwrap();
+        assert_eq!(s, "summary: (no summary)");
     }
 
     #[test]
@@ -341,8 +505,23 @@ mod tests {
     }
 
     #[test]
-    fn section_for_marks_major_headers_bold() {
-        for header in [
+    fn section_for_kobito_source_uses_kobito_bg() {
+        for line in [
+            "kobito start: thing",
+            "  tokens — 100",
+            "summary: did stuff",
+            "agent reported natural_stop",
+            "asking agent for something",
+        ] {
+            let (bg, fg, _) = section_for("kobito", line);
+            assert!(bg.contains("25;30;42"), "expected kobito bg for {line:?}");
+            assert!(fg.is_some());
+        }
+    }
+
+    #[test]
+    fn section_for_kobito_major_lines_are_bold() {
+        for line in [
             "kobito start",
             "kobito resume foo",
             "project: kobito",
@@ -351,42 +530,37 @@ mod tests {
             "=== task 1 ===",
             "✓ committed abc",
             "✓ PR opened",
+            "✓ draft PR: https://...",
         ] {
-            let (_, fg, bold) = section_for(header);
-            assert!(bold, "expected bold for {header:?}");
+            let (_, fg, bold) = section_for("kobito", line);
+            assert!(bold, "expected bold for {line:?}");
             assert!(fg.is_some());
         }
     }
 
     #[test]
-    fn section_for_marks_summary_lines_non_bold() {
-        for line in [
-            "done iter 1",
-            "  tokens — 100",
-            "agent reported natural_stop",
+    fn section_for_routes_errors_to_maroon_bg_regardless_of_source() {
+        for (source, line) in [
+            ("kobito", "✗ push failed"),
+            ("agent", "✗ Read"),
+            ("kobito", "interrupting agent"),
         ] {
-            let (_, fg, bold) = section_for(line);
-            assert!(!bold, "expected non-bold for {line:?}");
-            assert!(fg.is_some());
-        }
-    }
-
-    #[test]
-    fn section_for_routes_errors_to_maroon_bg() {
-        for err in ["✗ failed", "interrupting agent"] {
-            let (bg, _, bold) = section_for(err);
+            let (bg, _, bold) = section_for(source, line);
             assert!(bold);
-            assert!(bg.contains("50;22;26"), "expected maroon bg for {err:?}");
+            assert!(
+                bg.contains("50;22;26"),
+                "expected maroon bg for ({source:?}, {line:?})"
+            );
         }
     }
 
     #[test]
-    fn section_for_classifies_tool_calls_and_body() {
-        let (_, fg, bold) = section_for("▶ Read");
+    fn section_for_classifies_agent_tool_calls_and_body() {
+        let (_, fg, bold) = section_for("agent", "▶ Read");
         assert!(!bold);
         assert!(fg.is_some());
 
-        let (bg, fg, bold) = section_for("plain agent body");
+        let (bg, fg, bold) = section_for("agent", "plain agent body");
         assert!(!bold);
         assert!(fg.is_none());
         assert!(bg.contains("18;19;22"));
@@ -394,10 +568,29 @@ mod tests {
 
     #[test]
     fn colorize_wraps_with_reset_sequence() {
-        let s = colorize("hello", "padding hello");
+        let s = colorize("kobito", "hello", "padding hello");
         assert!(s.starts_with("\x1b["));
         assert!(s.ends_with("\x1b[K\x1b[0m"));
         assert!(s.contains("padding hello"));
+    }
+
+    #[test]
+    fn colorize_paints_each_line_for_multi_line_input() {
+        let s = colorize("kobito", "first", "first\nsecond\nthird");
+        // Three lines → three opening SGR escapes (one per line).
+        let opens = s.matches("\x1b[48;2;25;30;42").count();
+        assert_eq!(opens, 3);
+        // Three \x1b[K end-of-line clears, one final reset.
+        assert_eq!(s.matches("\x1b[K").count(), 3);
+        assert!(s.ends_with("\x1b[0m"));
+    }
+
+    #[test]
+    fn style_kobito_prompt_does_not_clear_to_eol() {
+        let s = style_kobito_prompt("Continue?");
+        assert!(s.contains("\x1b[48;2;25;30;42"));
+        assert!(!s.contains("\x1b[K"));
+        assert!(s.ends_with("\x1b[0m"));
     }
 
     #[test]
