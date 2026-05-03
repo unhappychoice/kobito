@@ -1030,6 +1030,36 @@ mod tests {
         )
     }
 
+    fn draft_tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
+        PrTracker::new(
+            "main".to_string(),
+            run,
+            state::RunMeta {
+                run_id: run.timestamp.clone(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: "increase coverage".to_string(),
+                agent: "fake".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+            "draft title".to_string(),
+            "draft body".to_string(),
+        )
+    }
+
+    #[test]
+    fn pr_tracker_marks_create_failed_when_initial_push_fails() {
+        let (_dir, run, sink) = temp_run("pr-tracker-push-failure");
+        let repo = temp_repo(&run);
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "feature/test", &sink);
+
+        assert!(tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url, None);
+    }
+
     #[tokio::test]
     async fn run_iterations_stops_when_agent_reports_natural_stop() {
         let (_dir, run, sink) = temp_run("natural-stop");
