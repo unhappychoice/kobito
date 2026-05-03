@@ -1,5 +1,11 @@
 # kobito
 
+[![CI](https://github.com/unhappychoice/kobito/actions/workflows/ci.yml/badge.svg)](https://github.com/unhappychoice/kobito/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/kobito.svg)](https://crates.io/crates/kobito)
+[![Downloads](https://img.shields.io/crates/d/kobito.svg)](https://crates.io/crates/kobito)
+[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/unhappychoice/kobito.svg)](https://github.com/unhappychoice/kobito/releases)
+
 <p align="center">
   <img src="docs/assets/image.png" alt="kobito" style="max-width: 100%; width: 800px;" />
 </p>
