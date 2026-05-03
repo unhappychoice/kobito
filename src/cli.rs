@@ -283,4 +283,13 @@ mod tests {
             }
         ));
     }
+
+    #[tokio::test]
+    async fn dispatch_log_reports_not_implemented() {
+        let cli = Cli::parse_from(["kobito", "log", "project-id"]);
+
+        let err = dispatch(cli).await.unwrap_err();
+
+        assert!(err.to_string().contains("not yet implemented"));
+    }
 }
