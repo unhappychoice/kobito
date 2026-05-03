@@ -1552,4 +1552,32 @@ mod tests {
 
         assert!(err.to_string().contains("agent reply was not valid JSON"));
     }
+
+    #[tokio::test]
+    async fn ask_pr_metadata_returns_agent_suggestion() {
+        let (_dir, _run, sink) = temp_run("ask-pr-metadata-ok");
+        let agent = FakeAgent {
+            script: r#"printf '{"title":"test(runner): cover pr metadata","body":"planned work"}'"#,
+        };
+
+        let (title, body) =
+            ask_pr_metadata(&agent, Path::new("."), "increase coverage", &sink).await;
+
+        assert_eq!(title, "test(runner): cover pr metadata");
+        assert_eq!(body, "planned work");
+    }
+
+    #[tokio::test]
+    async fn ask_pr_metadata_falls_back_when_agent_fails() {
+        let (_dir, _run, sink) = temp_run("ask-pr-metadata-fallback");
+        let agent = FakeAgent {
+            script: "printf 'not json'",
+        };
+
+        let (title, body) =
+            ask_pr_metadata(&agent, Path::new("."), " increase coverage ", &sink).await;
+
+        assert_eq!(title, "kobito run");
+        assert_eq!(body, "kobito is working on:\n\nincrease coverage");
+    }
 }
