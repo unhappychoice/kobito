@@ -1325,6 +1325,46 @@ mod tests {
         assert!(outcome.is_none());
     }
 
+    #[tokio::test]
+    async fn run_finalize_round_commits_agent_fixes_with_finalize_prefix() {
+        let (_dir, run, sink) = temp_run("finalize-commit-fixes");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'fixed\n' > README.md; printf '{"ready_for_review":false,"summary":"fixed lint"}\n'"#,
+            oneshot_script: "printf 'fix(runner): polish finalize path\n\nKeep the PR clean.\n'",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert!(!outcome.ready);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "fixed\n"
+        );
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "chore(finalize): polish finalize path"
+        );
+    }
+
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
         assert_eq!(truncate_for_finalize("short"), "short");
