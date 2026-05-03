@@ -353,7 +353,10 @@ mod tests {
 
         let diff = diff_against(&repo, "main").unwrap();
 
-        assert!(diff.contains("-v1"), "expected diff to remove v1, got: {diff}");
+        assert!(
+            diff.contains("-v1"),
+            "expected diff to remove v1, got: {diff}"
+        );
         assert!(diff.contains("+v2"), "expected diff to add v2, got: {diff}");
     }
 
@@ -364,7 +367,10 @@ mod tests {
 
         let err = diff_against(&repo, "missing-base").unwrap_err().to_string();
 
-        assert!(err.contains("git diff missing-base...HEAD failed"), "got: {err}");
+        assert!(
+            err.contains("git diff missing-base...HEAD failed"),
+            "got: {err}"
+        );
     }
 
     #[test]

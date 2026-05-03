@@ -1012,6 +1012,24 @@ mod tests {
         assert!(status.success(), "git {} failed", args.join(" "));
     }
 
+    fn tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
+        PrTracker::new(
+            "main".to_string(),
+            run,
+            state::RunMeta {
+                run_id: run.timestamp.clone(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: "increase coverage".to_string(),
+                agent: "fake".to_string(),
+                pr_url: Some("https://example.test/pull/1".to_string()),
+                base_branch: Some("main".to_string()),
+            },
+            "draft title".to_string(),
+            "draft body".to_string(),
+        )
+    }
+
     #[tokio::test]
     async fn run_iterations_stops_when_agent_reports_natural_stop() {
         let (_dir, run, sink) = temp_run("natural-stop");
@@ -1201,7 +1219,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(completed, 0);
-        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "start\n");
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "start\n"
+        );
         assert!(run.prompts_dir.join("iter-0001.md").exists());
         assert!(!run.prompts_dir.join("iter-0002.md").exists());
     }
@@ -1241,9 +1262,67 @@ mod tests {
         cancel_task.await.unwrap();
 
         assert_eq!(completed, 0);
-        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "changed\n");
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "changed\n"
+        );
         assert!(run.prompts_dir.join("iter-0001.md").exists());
         assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_returns_ready_metadata_from_agent_reply() {
+        let (_dir, run, sink) = temp_run("finalize-ready");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"ready_for_review":true,"pr_title":" test(runner): finalize ","pr_body":"ready body","summary":"checked"}\n'"#,
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.ready);
+        assert_eq!(outcome.title.as_deref(), Some("test(runner): finalize"));
+        assert_eq!(outcome.body.as_deref(), Some("ready body"));
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_on_invalid_agent_reply() {
+        let (_dir, run, sink) = temp_run("finalize-invalid-json");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "printf 'not json\n'",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
     }
 
     #[test]
