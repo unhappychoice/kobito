@@ -1070,6 +1070,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_iterations_exits_before_prompt_when_cancelled() {
+        let (_dir, run, sink) = temp_run("cancelled-before-prompt");
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(true),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(!run.prompts_dir.join("iter-0001.md").exists());
+    }
+
+    #[tokio::test]
     async fn run_iterations_commits_agent_changes() {
         let (_dir, run, sink) = temp_run("commit-changes");
         let repo = temp_repo(&run);
