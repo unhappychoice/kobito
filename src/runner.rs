@@ -1081,6 +1081,43 @@ esac
         }
     }
 
+    fn write_remote_commit_codex(bin: &Path) {
+        let script = bin.join("codex");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    printf 'generated\n' > generated.txt
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"natural_stop\":false}"}}'
+    ;;
+  *"Suggest a single git branch name"*)
+    printf 'feature/remote-run\n'
+    ;;
+  *"Suggest a draft GitHub Pull Request title"*)
+    printf '%s\n' '{"title":"test(runner): cover remote run","body":"Covers the remote-backed continuous path."}'
+    ;;
+  *"Generate a single commit message"*)
+    printf 'test(runner): cover remote run\n'
+    ;;
+  *"Distill what is useful"*)
+    printf 'NO_NOTES\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     fn single_run_dir(state_home: &Path) -> PathBuf {
         fs::read_dir(state_home.join("kobito/projects"))
             .unwrap()
@@ -1357,6 +1394,62 @@ esac
         let prompt =
             fs::read_to_string(single_run_dir(&state_home).join("prompts/iter-0001.md")).unwrap();
         assert!(prompt.contains("cover src/runner.rs carefully"));
+    }
+
+    #[tokio::test]
+    async fn run_continuous_opens_draft_pr_after_first_remote_commit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-remote-pr");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let url = "https://github.example/unhappychoice/kobito/pull/42";
+
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::create_dir_all(&bin).unwrap();
+        write_remote_commit_codex(&bin);
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let run_dir = single_run_dir(&state_home);
+        let log = fs::read_to_string(run_dir.join("log.ndjson")).unwrap();
+        let meta = fs::read_to_string(run_dir.join("meta.json")).unwrap();
+        assert!(branch.starts_with("feature/remote-run-"));
+        assert!(repo.join("generated.txt").exists());
+        assert!(log.contains("PR title drafted: test(runner): cover remote run"));
+        assert!(log.contains("PR opened (draft)"));
+        assert!(meta.contains(url));
     }
 
     #[tokio::test]
