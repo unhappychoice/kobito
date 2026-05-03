@@ -26,18 +26,9 @@ pub fn create(
 /// Edit a PR's title and/or body via `gh pr edit`. Each field is optional
 /// so callers can update one without clobbering the other.
 pub fn edit(repo: &Path, url: &str, title: Option<&str>, body: Option<&str>) -> Result<()> {
-    if title.is_none() && body.is_none() {
+    let Some(args) = edit_args(url, title, body) else {
         return Ok(());
-    }
-    let mut args = vec!["pr".to_string(), "edit".to_string(), url.to_string()];
-    if let Some(t) = title {
-        args.push("--title".to_string());
-        args.push(t.to_string());
-    }
-    if let Some(b) = body {
-        args.push("--body".to_string());
-        args.push(b.to_string());
-    }
+    };
     run_gh(repo, &args)?;
     Ok(())
 }
@@ -74,6 +65,22 @@ fn create_args(base: &str, branch: &str, title: &str, body: &str, draft: bool) -
         args.push("--draft".to_string());
     }
     args
+}
+
+fn edit_args(url: &str, title: Option<&str>, body: Option<&str>) -> Option<Vec<String>> {
+    if title.is_none() && body.is_none() {
+        return None;
+    }
+    let mut args = vec!["pr".to_string(), "edit".to_string(), url.to_string()];
+    if let Some(t) = title {
+        args.push("--title".to_string());
+        args.push(t.to_string());
+    }
+    if let Some(b) = body {
+        args.push("--body".to_string());
+        args.push(b.to_string());
+    }
+    Some(args)
 }
 
 fn run_git<S: AsRef<str>>(repo: &Path, args: &[S]) -> Result<String> {
@@ -145,5 +152,57 @@ mod tests {
         assert_eq!(args[title_idx + 1], "the title");
         let body_idx = args.iter().position(|a| a == "--body").unwrap();
         assert_eq!(args[body_idx + 1], "multi\nline\nbody");
+    }
+
+    #[test]
+    fn edit_args_returns_none_when_no_fields_are_set() {
+        assert_eq!(edit_args("https://github.com/o/r/pull/1", None, None), None);
+    }
+
+    #[test]
+    fn edit_args_with_title_only_omits_body() {
+        let args = edit_args("https://github.com/o/r/pull/1", Some("new title"), None).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "pr",
+                "edit",
+                "https://github.com/o/r/pull/1",
+                "--title",
+                "new title",
+            ],
+        );
+    }
+
+    #[test]
+    fn edit_args_with_body_only_omits_title() {
+        let args = edit_args("https://github.com/o/r/pull/1", None, Some("body")).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "pr",
+                "edit",
+                "https://github.com/o/r/pull/1",
+                "--body",
+                "body"
+            ],
+        );
+    }
+
+    #[test]
+    fn edit_args_with_title_and_body_preserves_order() {
+        let args = edit_args("https://github.com/o/r/pull/1", Some("title"), Some("body")).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "pr",
+                "edit",
+                "https://github.com/o/r/pull/1",
+                "--title",
+                "title",
+                "--body",
+                "body",
+            ],
+        );
     }
 }
