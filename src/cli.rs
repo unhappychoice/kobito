@@ -160,3 +160,127 @@ fn edit_tasks() -> Result<()> {
     println!("{}", path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cont_accepts_prompt_and_defaults() {
+        let cli = Cli::parse_from(["kobito", "cont", "--prompt", "ship it"]);
+        let Command::Cont(args) = cli.command else {
+            panic!("expected cont command");
+        };
+
+        assert_eq!(args.prompt.as_deref(), Some("ship it"));
+        assert_eq!(args.preset, None);
+        assert_eq!(args.max_iterations, 50);
+        assert_eq!(args.max_failures, 3);
+        assert_eq!(args.agent, "claude");
+        assert!(!args.allow_dirty);
+    }
+
+    #[test]
+    fn continuous_alias_accepts_preset_vars_and_options() {
+        let cli = Cli::parse_from([
+            "kobito",
+            "continuous",
+            "--preset",
+            "coverage",
+            "--var",
+            "path=src",
+            "--max-iterations",
+            "7",
+            "--max-failures",
+            "2",
+            "--agent",
+            "codex",
+            "--allow-dirty",
+        ]);
+        let Command::Cont(args) = cli.command else {
+            panic!("expected cont command");
+        };
+
+        assert_eq!(args.preset.as_deref(), Some("coverage"));
+        assert_eq!(args.vars, vec!["path=src"]);
+        assert_eq!(args.max_iterations, 7);
+        assert_eq!(args.max_failures, 2);
+        assert_eq!(args.agent, "codex");
+        assert!(args.allow_dirty);
+    }
+
+    #[test]
+    fn cont_requires_exactly_one_goal_source() {
+        assert!(Cli::try_parse_from(["kobito", "cont"]).is_err());
+        assert!(Cli::try_parse_from(["kobito", "cont", "--prompt", "x", "--preset", "y"]).is_err());
+    }
+
+    #[test]
+    fn iteration_alias_parses_backlog_preset_and_vars() {
+        let cli = Cli::parse_from([
+            "kobito",
+            "iteration",
+            "--backlog",
+            "tasks.md",
+            "--preset",
+            "repo",
+            "--var",
+            "area=runner",
+            "--agent",
+            "codex",
+            "--allow-dirty",
+        ]);
+        let Command::Iter(args) = cli.command else {
+            panic!("expected iter command");
+        };
+
+        assert_eq!(args.backlog, Some(PathBuf::from("tasks.md")));
+        assert_eq!(args.preset.as_deref(), Some("repo"));
+        assert_eq!(args.vars, vec!["area=runner"]);
+        assert_eq!(args.max_iterations, 30);
+        assert_eq!(args.max_failures, 3);
+        assert_eq!(args.agent, "codex");
+        assert!(args.allow_dirty);
+    }
+
+    #[test]
+    fn resume_parses_optional_run_and_limits() {
+        let cli = Cli::parse_from([
+            "kobito",
+            "resume",
+            "--run",
+            "20260503-120000",
+            "--max-iterations",
+            "4",
+            "--max-failures",
+            "1",
+            "--allow-dirty",
+        ]);
+        let Command::Resume(args) = cli.command else {
+            panic!("expected resume command");
+        };
+
+        assert_eq!(args.run.as_deref(), Some("20260503-120000"));
+        assert_eq!(args.max_iterations, 4);
+        assert_eq!(args.max_failures, 1);
+        assert!(args.allow_dirty);
+    }
+
+    #[test]
+    fn parses_leaf_commands() {
+        assert!(matches!(
+            Cli::parse_from(["kobito", "ls"]).command,
+            Command::Ls
+        ));
+        assert!(matches!(
+            Cli::parse_from(["kobito", "log", "project-id"]).command,
+            Command::Log { project: Some(_) }
+        ));
+        assert!(matches!(
+            Cli::parse_from(["kobito", "tasks", "edit"]).command,
+            Command::Tasks {
+                action: TasksAction::Edit
+            }
+        ));
+    }
+}
