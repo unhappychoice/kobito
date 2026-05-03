@@ -1109,6 +1109,37 @@ mod tests {
         assert!(state::notes_path(&run).exists());
     }
 
+    #[tokio::test]
+    async fn run_iterations_resets_worktree_after_agent_failure() {
+        let (_dir, run, sink) = temp_run("agent-failure");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: "printf 'changed\n' > README.md; exit 7",
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "start\n");
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
         assert_eq!(truncate_for_finalize("short"), "short");
