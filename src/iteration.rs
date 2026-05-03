@@ -384,6 +384,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_loads_preset_into_task_prompt() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("preset-prompt");
+        let repo = dir.0.join("repo");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Cover preset path\n").unwrap();
+        write_fake_codex(&bin);
+        init_repo(&repo);
+        write_local_preset(&repo, "coverage", "Preset target: {{module}}\n");
+        run_git(&repo, &["add", ".kobito"]);
+        run_git(&repo, &["commit", "-m", "test: add preset"]);
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: Some("coverage".into()),
+            vars: vec!["module=iteration".into()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_saved_prompt_mentions_task(&project, "Preset target: iteration");
+        assert_saved_prompt_mentions_task(&project, "Cover preset path");
+    }
+
+    #[tokio::test]
     async fn run_uses_fallback_branch_when_agent_suggests_blank() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_dir = std::env::current_dir().unwrap();
@@ -605,6 +653,12 @@ esac
         std::fs::write(repo.join("README.md"), "hello\n").unwrap();
         run_git(repo, &["add", "."]);
         run_git(repo, &["commit", "-m", "chore: initial"]);
+    }
+
+    fn write_local_preset(repo: &Path, name: &str, body: &str) {
+        let dir = repo.join(".kobito").join("presets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
     }
 
     fn init_bare_remote(remote: &Path) {
