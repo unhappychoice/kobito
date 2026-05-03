@@ -437,4 +437,17 @@ mod tests {
         assert!(result.is_ok());
         fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn list_projects_accepts_populated_state_root() {
+        let dir = unique_dir("list-populated");
+        let project = dir.join("kobito/projects/project-a");
+        fs::create_dir_all(project.join("runs/2026-05-01T00-00-00")).unwrap();
+        fs::create_dir_all(project.join("runs/2026-05-02T00-00-00")).unwrap();
+
+        let result = with_xdg_state_home(&dir, list_projects);
+
+        assert!(result.is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
 }
