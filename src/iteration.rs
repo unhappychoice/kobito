@@ -476,6 +476,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_skips_task_when_branch_creation_fails() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("branch-collision");
+        let repo = dir.0.join("repo");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Skip collided branch\n").unwrap();
+        write_fake_codex_with_branch(&bin, "feature/collision");
+        init_repo(&repo);
+        run_git(&repo, &["branch", "feature/collision-task-1"]);
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(git::current_branch(&repo).unwrap(), "main");
+        assert_eq!(
+            std::fs::read_to_string(state::tasks_path(&project)).unwrap(),
+            "- [ ] Skip collided branch\n",
+        );
+        assert_eq!(
+            std::fs::read_dir(project.root.join("runs"))
+                .unwrap()
+                .count(),
+            0,
+        );
+    }
+
+    #[tokio::test]
     async fn run_commits_completed_task_and_marks_backlog_done() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_dir = std::env::current_dir().unwrap();
