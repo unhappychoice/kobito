@@ -2308,6 +2308,29 @@ esac
     }
 
     #[test]
+    fn ensure_finalize_prefix_keeps_malformed_conventional_subjects() {
+        assert_eq!(
+            ensure_finalize_prefix("feat(scope: missing close"),
+            "chore(finalize): feat(scope: missing close"
+        );
+        assert_eq!(
+            ensure_finalize_prefix("Fix(scope): uppercase type"),
+            "chore(finalize): Fix(scope): uppercase type"
+        );
+    }
+
+    #[test]
+    fn format_usage_compacts_large_token_counts() {
+        let usage = agent::Usage {
+            input_tokens: 42,
+            output_tokens: 12_345,
+            cached_input_tokens: 1_234_567,
+        };
+
+        assert_eq!(format_usage(&usage), "in 42 · out 12.3k · cached 1.2M");
+    }
+
+    #[test]
     fn parse_finalize_reply_accepts_fenced_ready_response() {
         let reply = parse_finalize_reply(
             "```json\n{\"ready_for_review\":true,\"pr_title\":\" test(scope): cover x \",\"pr_body\":\"body\",\"summary\":\"done\"}\n```",
