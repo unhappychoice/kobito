@@ -1116,6 +1116,24 @@ mod tests {
         assert_eq!(tracker.meta.pr_url, None);
     }
 
+    #[test]
+    fn pr_tracker_marks_create_failed_when_draft_create_fails() {
+        let (_dir, run, sink) = temp_run("pr-tracker-create-failure");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        assert!(tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url, None);
+    }
+
     #[tokio::test]
     async fn run_iterations_stops_when_agent_reports_natural_stop() {
         let (_dir, run, sink) = temp_run("natural-stop");
