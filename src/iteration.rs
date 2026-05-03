@@ -319,6 +319,50 @@ mod tests {
         assert_saved_prompt_mentions_task(&project, "Cover iteration run path");
     }
 
+    #[tokio::test]
+    async fn run_uses_fallback_branch_when_agent_suggests_blank() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("fallback-branch");
+        let repo = dir.0.join("repo");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Use fallback branch name\n").unwrap();
+        write_fake_codex_with_branch(&bin, "   ");
+        init_repo(&repo);
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(git::current_branch(&repo).unwrap(), "main");
+        assert_branch_exists(&repo, "kobito/task-1-use-fallback-branch-name-task-1");
+    }
+
     struct TempDir(PathBuf);
 
     impl Drop for TempDir {
@@ -338,6 +382,10 @@ mod tests {
     }
 
     fn write_fake_codex(bin: &Path) {
+        write_fake_codex_with_branch(bin, "feature/from-fake");
+    }
+
+    fn write_fake_codex_with_branch(bin: &Path, branch: &str) {
         let script = bin.join("codex");
         std::fs::write(
             &script,
@@ -348,10 +396,11 @@ case " $* " in
     printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2,"cached_input_tokens":3}}'
     ;;
   *)
-    printf '%s\n' 'feature/from-fake'
+    printf '%s\n' '__BRANCH__'
     ;;
 esac
-"#,
+"#
+            .replace("__BRANCH__", branch),
         )
         .unwrap();
         #[cfg(unix)]
