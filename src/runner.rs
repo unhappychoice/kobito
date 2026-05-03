@@ -901,6 +901,31 @@ fn format_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
+
+    struct FakeAgent {
+        script: &'static str,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn parse_event(&self, _: &str) -> Vec<agent::AgentEvent> {
+            vec![]
+        }
+    }
 
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
@@ -1006,6 +1031,44 @@ mod tests {
     #[test]
     fn parse_finalize_reply_rejects_invalid_json() {
         let err = parse_finalize_reply("not json").unwrap_err();
+        assert!(err.to_string().contains("agent reply was not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_accepts_fenced_json() {
+        let agent = FakeAgent {
+            script: r#"printf '```json\n{"title":" test(runner): cover metadata ","body":" body text "}\n```'"#,
+        };
+        let (title, body) = suggest_pr_metadata(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap();
+
+        assert_eq!(title, "test(runner): cover metadata");
+        assert_eq!(body, "body text");
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_defaults_blank_fields() {
+        let agent = FakeAgent {
+            script: r#"printf '{"title":"   ","body":"   "}'"#,
+        };
+        let (title, body) = suggest_pr_metadata(&agent, Path::new("."), " increase coverage ")
+            .await
+            .unwrap();
+
+        assert_eq!(title, "kobito run");
+        assert_eq!(body, "kobito is working on:\n\nincrease coverage");
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_rejects_invalid_json() {
+        let agent = FakeAgent {
+            script: "printf 'not json'",
+        };
+        let err = suggest_pr_metadata(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap_err();
+
         assert!(err.to_string().contains("agent reply was not valid JSON"));
     }
 }
