@@ -901,6 +901,9 @@ fn format_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentEvent;
+    use std::path::PathBuf;
+    use std::process;
     use tokio::process::Command;
 
     struct FakeAgent {
@@ -925,6 +928,116 @@ mod tests {
         fn parse_event(&self, _: &str) -> Vec<agent::AgentEvent> {
             vec![]
         }
+    }
+
+    struct StreamingFakeAgent {
+        script: &'static str,
+    }
+
+    impl Agent for StreamingFakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
+            vec![AgentEvent::Message(line.to_string())]
+        }
+    }
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_run(prefix: &str) -> (TempDir, state::RunPaths, LogSink) {
+        let nanos = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let root =
+            std::env::temp_dir().join(format!("kobito-runner-{prefix}-{}-{nanos}", process::id()));
+        let project = state::ProjectPaths {
+            id: "test-project".to_string(),
+            root: root.join("project"),
+        };
+        let run = state::RunPaths {
+            project,
+            run_dir: root.join("run"),
+            log_file: root.join("run/log.ndjson"),
+            prompts_dir: root.join("run/prompts"),
+            timestamp: "run-1".to_string(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        fs::write(&run.log_file, "").unwrap();
+        let sink = LogSink::open(&run.log_file, None).unwrap();
+        (TempDir(root), run, sink)
+    }
+
+    fn flag(value: bool) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(value))
+    }
+
+    #[tokio::test]
+    async fn run_iterations_stops_when_agent_reports_natural_stop() {
+        let (_dir, run, sink) = temp_run("natural-stop");
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"natural_stop":true}\n'"#,
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_exits_before_prompt_when_finalize_requested() {
+        let (_dir, run, sink) = temp_run("finalize-requested");
+        let agent = StreamingFakeAgent { script: "exit 99" };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(true),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(!run.prompts_dir.join("iter-0001.md").exists());
     }
 
     #[test]
