@@ -1692,6 +1692,40 @@ esac
     }
 
     #[test]
+    fn pr_tracker_logs_meta_persist_failure_after_draft_create() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-tracker-persist-failure");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let url = "https://github.example/unhappychoice/kobito/pull/1";
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir(run.run_dir.join("meta.json")).unwrap();
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url.as_deref(), Some(url));
+        assert!(log.contains("PR opened (draft)"));
+        assert!(log.contains("persist meta failed"));
+    }
+
+    #[test]
     fn apply_pr_metadata_logs_success_after_edit() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_path = std::env::var_os("PATH");
