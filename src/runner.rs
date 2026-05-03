@@ -1055,6 +1055,32 @@ esac
         }
     }
 
+    fn write_natural_stop_codex(bin: &Path, branch: &str) {
+        let script = bin.join("codex");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"natural_stop\":true}"}}'
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2,"cached_input_tokens":3}}'
+    ;;
+  *)
+    printf '%s\n' '__BRANCH__'
+    ;;
+esac
+"#
+            .replace("__BRANCH__", branch),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     fn tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
         PrTracker::new(
             "main".to_string(),
@@ -1145,6 +1171,62 @@ esac
         let selected = pick_run_to_resume(&project).unwrap();
 
         assert_eq!(selected, "2026-05-02T00-00-00");
+    }
+
+    #[tokio::test]
+    async fn run_continuous_records_no_remote_run_and_stops_naturally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-natural-stop");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "feature/continuous");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 3,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert!(branch.starts_with("feature/continuous-"));
+        git::ensure_clean(&repo).unwrap();
+
+        let project_root = state_home.join("kobito").join("projects");
+        let run_dir = fs::read_dir(project_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .flat_map(|entry| fs::read_dir(entry.path().join("runs")).unwrap())
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .next()
+            .unwrap();
+        let log = fs::read_to_string(run_dir.join("log.ndjson")).unwrap();
+        assert!(log.contains("no git remote configured"));
+        assert!(log.contains("agent reported natural_stop"));
+        assert!(run_dir.join("prompts/iter-0001.md").exists());
+        assert!(!run_dir.join("prompts/iter-0002.md").exists());
     }
 
     #[test]
