@@ -462,7 +462,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "console",
+ "console 0.15.11",
  "ctrlc",
  "dialoguer",
  "dirs",
