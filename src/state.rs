@@ -206,15 +206,20 @@ mod tests {
     }
 
     fn with_xdg_state_home<T>(root: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var_os("XDG_STATE_HOME");
-        unsafe { std::env::set_var("XDG_STATE_HOME", root) };
-        let result = f();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_STATE_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("XDG_STATE_HOME", value) },
+                    None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
+                }
+            }
         }
-        result
+
+        let _guard = ENV_LOCK.blocking_lock();
+        let _restore = Restore(std::env::var_os("XDG_STATE_HOME"));
+        unsafe { std::env::set_var("XDG_STATE_HOME", root) };
+        f()
     }
 
     fn project_with_root(root: PathBuf, id: &str) -> ProjectPaths {
