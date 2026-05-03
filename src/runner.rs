@@ -902,6 +902,7 @@ fn format_count(n: u64) -> String {
 mod tests {
     use super::*;
     use crate::agent::AgentEvent;
+    use crate::test_support::ENV_LOCK;
     use std::path::PathBuf;
     use std::process;
     use tokio::process::Command;
@@ -990,6 +991,21 @@ mod tests {
         Arc::new(AtomicBool::new(value))
     }
 
+    fn set_env(name: &str, value: Option<&std::ffi::OsStr>) {
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    fn prefixed_path(bin: &Path, old: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+        let mut paths = vec![bin.to_path_buf()];
+        paths.extend(std::env::split_paths(&old.unwrap_or_default()));
+        std::env::join_paths(paths).unwrap()
+    }
+
     fn temp_repo(run: &state::RunPaths) -> PathBuf {
         let repo = run.run_dir.parent().unwrap().join("repo");
         fs::create_dir_all(&repo).unwrap();
@@ -1010,6 +1026,33 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
+    fn write_fake_gh(bin: &Path, url: &str) {
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "pr create")
+    test -f .git/kobito-test-gh-success || exit 1
+    printf '%s\n' '{url}'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     fn tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
@@ -1132,6 +1175,38 @@ mod tests {
 
         assert!(tracker.create_failed);
         assert_eq!(tracker.meta.pr_url, None);
+    }
+
+    #[test]
+    fn pr_tracker_persists_url_when_draft_create_succeeds() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-tracker-create-success");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let url = "https://github.example/unhappychoice/kobito/pull/1";
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        set_env("PATH", old_path.as_deref());
+        let meta = fs::read_to_string(run.run_dir.join("meta.json")).unwrap();
+        assert!(!tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url.as_deref(), Some(url));
+        assert!(meta.contains(url));
     }
 
     #[tokio::test]

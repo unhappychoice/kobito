@@ -229,11 +229,9 @@ fn task_pr_body(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_LOCK;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn fallback_branch_name_uses_task_index_and_slugifies_body() {

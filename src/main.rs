@@ -15,6 +15,8 @@ mod prompt;
 mod runner;
 mod state;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 #[tokio::main]
