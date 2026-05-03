@@ -1228,6 +1228,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_iterations_retries_after_transient_agent_failure() {
+        let (_dir, run, sink) = temp_run("transient-agent-failure");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: "if [ ! -f attempt ]; then touch attempt; printf 'changed\n' > README.md; exit 7; fi; printf 'generated\n' > generated.txt; printf '{\"natural_stop\":false}\n'",
+            oneshot_script: "printf 'test(runner): commit after retry\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 2,
+            max_failures: 2,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "start\n"
+        );
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "test(runner): commit after retry"
+        );
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
     async fn run_iterations_leaves_worktree_when_cancelled_during_agent_failure() {
         let (_dir, run, sink) = temp_run("cancelled-agent-failure");
         let repo = temp_repo(&run);
