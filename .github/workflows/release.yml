@@ -173,3 +173,62 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    needs: [release, build-and-upload]
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: unhappychoice/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew formula
+        run: |
+          VERSION=${{ needs.release.outputs.new_version }}
+
+          MACOS_INTEL_URL="https://github.com/unhappychoice/kobito/releases/download/$VERSION/kobito-$VERSION-x86_64-apple-darwin.tar.gz"
+          MACOS_INTEL_SHA=$(curl -sL "$MACOS_INTEL_URL" | sha256sum | cut -d' ' -f1)
+
+          MACOS_ARM_URL="https://github.com/unhappychoice/kobito/releases/download/$VERSION/kobito-$VERSION-aarch64-apple-darwin.tar.gz"
+          MACOS_ARM_SHA=$(curl -sL "$MACOS_ARM_URL" | sha256sum | cut -d' ' -f1)
+
+          LINUX_INTEL_URL="https://github.com/unhappychoice/kobito/releases/download/$VERSION/kobito-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          LINUX_INTEL_SHA=$(curl -sL "$LINUX_INTEL_URL" | sha256sum | cut -d' ' -f1)
+
+          LINUX_ARM_URL="https://github.com/unhappychoice/kobito/releases/download/$VERSION/kobito-$VERSION-aarch64-unknown-linux-gnu.tar.gz"
+          LINUX_ARM_SHA=$(curl -sL "$LINUX_ARM_URL" | sha256sum | cut -d' ' -f1)
+
+          echo "Calculated SHAs:"
+          echo "macOS Intel: $MACOS_INTEL_SHA"
+          echo "macOS ARM: $MACOS_ARM_SHA"
+          echo "Linux Intel: $LINUX_INTEL_SHA"
+          echo "Linux ARM: $LINUX_ARM_SHA"
+
+          cd homebrew-tap
+
+          sed -i "s|https://github.com/unhappychoice/kobito/releases/download/v[0-9.]\+/kobito-v[0-9.]\+-x86_64-apple-darwin.tar.gz|$MACOS_INTEL_URL|g" Formula/kobito.rb
+          sed -i "s|https://github.com/unhappychoice/kobito/releases/download/v[0-9.]\+/kobito-v[0-9.]\+-aarch64-apple-darwin.tar.gz|$MACOS_ARM_URL|g" Formula/kobito.rb
+          sed -i "s|https://github.com/unhappychoice/kobito/releases/download/v[0-9.]\+/kobito-v[0-9.]\+-x86_64-unknown-linux-gnu.tar.gz|$LINUX_INTEL_URL|g" Formula/kobito.rb
+          sed -i "s|https://github.com/unhappychoice/kobito/releases/download/v[0-9.]\+/kobito-v[0-9.]\+-aarch64-unknown-linux-gnu.tar.gz|$LINUX_ARM_URL|g" Formula/kobito.rb
+
+          FIRST_SHA_LINE=$(grep -n 'sha256 "' Formula/kobito.rb | head -1 | cut -d: -f1)
+          sed -i "${FIRST_SHA_LINE}s/sha256 \"[a-f0-9]\+\"/sha256 \"$MACOS_INTEL_SHA\"/" Formula/kobito.rb
+
+          SECOND_SHA_LINE=$(grep -n 'sha256 "' Formula/kobito.rb | head -2 | tail -1 | cut -d: -f1)
+          sed -i "${SECOND_SHA_LINE}s/sha256 \"[a-f0-9]\+\"/sha256 \"$MACOS_ARM_SHA\"/" Formula/kobito.rb
+
+          THIRD_SHA_LINE=$(grep -n 'sha256 "' Formula/kobito.rb | head -3 | tail -1 | cut -d: -f1)
+          sed -i "${THIRD_SHA_LINE}s/sha256 \"[a-f0-9]\+\"/sha256 \"$LINUX_INTEL_SHA\"/" Formula/kobito.rb
+
+          FOURTH_SHA_LINE=$(grep -n 'sha256 "' Formula/kobito.rb | head -4 | tail -1 | cut -d: -f1)
+          sed -i "${FOURTH_SHA_LINE}s/sha256 \"[a-f0-9]\+\"/sha256 \"$LINUX_ARM_SHA\"/" Formula/kobito.rb
+
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add Formula/kobito.rb
+          git commit -m "chore: update kobito to $VERSION"
+          git push
