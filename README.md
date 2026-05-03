@@ -25,9 +25,37 @@ names — are deferred to the agent's own memory files (`CLAUDE.md` /
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install unhappychoice/tap/kobito
+```
+
+### Install script (macOS / Linux)
+
+```sh
+curl -sSL https://raw.githubusercontent.com/unhappychoice/kobito/main/install.sh | bash
+```
+
+Drops the binary in `~/.local/bin` by default. Override with
+`INSTALL_DIR=/usr/local/bin` or pin a version with
+`bash install.sh v0.1.0`.
+
+### Cargo
+
+```sh
+cargo install kobito
+```
+
+### From source
+
 ```sh
 cargo install --path .
 ```
+
+Pre-built archives for `linux x86_64 / aarch64`, `macOS x86_64 /
+aarch64`, and `windows x86_64` are attached to every
+[GitHub release](https://github.com/unhappychoice/kobito/releases).
 
 Requires either the [`claude`](https://github.com/anthropics/claude-code)
 or [`codex`](https://github.com/openai/codex) CLI on `PATH` (see
