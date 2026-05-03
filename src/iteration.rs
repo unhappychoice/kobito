@@ -303,8 +303,7 @@ mod tests {
             allow_dirty: false,
         })
         .await;
-        let project =
-            state::project_paths(state::project_id(&git::repo_root().unwrap(), None)).unwrap();
+        let project = single_project_under(&state_home);
 
         std::env::set_current_dir(old_dir).unwrap();
         set_env("PATH", old_path.as_deref());
@@ -363,6 +362,70 @@ mod tests {
         assert_branch_exists(&repo, "kobito/task-1-use-fallback-branch-name-task-1");
     }
 
+    #[tokio::test]
+    async fn run_commits_completed_task_and_marks_backlog_done() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("completed-task");
+        let repo = dir.0.join("repo");
+        let remote = dir.0.join("origin.git");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Complete iteration task\n").unwrap();
+        write_completing_fake_codex(&bin);
+        write_fake_gh(&bin);
+        init_repo(&repo);
+        std::fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        init_bare_remote(&remote);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(git::current_branch(&repo).unwrap(), "main");
+        assert_branch_exists(&repo, "feature/completed-task-1");
+        assert_eq!(
+            std::fs::read_to_string(state::tasks_path(&project)).unwrap(),
+            "- [x] Complete iteration task\n",
+        );
+        assert_eq!(
+            git_output(
+                &repo,
+                &["log", "feature/completed-task-1", "-1", "--pretty=%s"]
+            ),
+            "test(iteration): complete task",
+        );
+    }
+
     struct TempDir(PathBuf);
 
     impl Drop for TempDir {
@@ -411,6 +474,63 @@ esac
         }
     }
 
+    fn write_completing_fake_codex(bin: &Path) {
+        let script = bin.join("codex");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    printf 'completed\n' >> README.md
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"task_complete\":true}"}}'
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5,"cached_input_tokens":6}}'
+    ;;
+  *"Suggest a single git branch name"*)
+    printf '%s\n' 'feature/completed'
+    ;;
+  *"Generate a single commit message"*)
+    printf '%s\n' 'test(iteration): complete task'
+    ;;
+  *)
+    printf '%s\n' 'NO_NOTES'
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn write_fake_gh(bin: &Path) {
+        let script = bin.join("gh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+case "$1 $2" in
+  "pr create")
+    test -f .git/kobito-test-gh-success || exit 1
+    printf '%s\n' 'https://github.example/unhappychoice/kobito/pull/1'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     fn init_repo(repo: &Path) {
         std::fs::create_dir_all(repo).unwrap();
         run_git(repo, &["init", "-b", "main"]);
@@ -422,6 +542,16 @@ esac
         run_git(repo, &["commit", "-m", "chore: initial"]);
     }
 
+    fn init_bare_remote(remote: &Path) {
+        std::fs::create_dir_all(remote).unwrap();
+        let status = Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(remote)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git init --bare failed with {status}");
+    }
+
     fn run_git(repo: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
@@ -429,6 +559,20 @@ esac
             .status()
             .unwrap();
         assert!(status.success(), "git {args:?} failed with {status}");
+    }
+
+    fn git_output(repo: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     fn prefixed_path(bin: &Path, old_path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
@@ -453,6 +597,25 @@ esac
             .status()
             .unwrap();
         assert!(status.success(), "expected branch {branch} to exist");
+    }
+
+    fn single_project_under(state_home: &Path) -> state::ProjectPaths {
+        let projects = state_home.join("kobito").join("projects");
+        let project_root = std::fs::read_dir(&projects)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .unwrap();
+        let id = project_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .to_string();
+        state::ProjectPaths {
+            id,
+            root: project_root,
+        }
     }
 
     fn assert_saved_prompt_mentions_task(project: &state::ProjectPaths, task: &str) {
