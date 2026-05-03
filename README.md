@@ -1,5 +1,9 @@
 # kobito
 
+<p align="center">
+  <img src="docs/assets/image.png" alt="kobito" style="max-width: 100%; width: 800px;" />
+</p>
+
 > Like the elves in the shoemaker's tale, it works while you sleep.
 
 `kobito` is an autonomous coding agent orchestrator. Give it a goal, it
