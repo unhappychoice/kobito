@@ -1055,6 +1055,36 @@ esac
         }
     }
 
+    fn write_fake_gh_edit(bin: &Path, status: i32) {
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "pr edit")
+    printf '%s\n' "$*" > gh-edit-args.txt
+    if [ {status} -ne 0 ]; then
+      printf 'edit failed\n' >&2
+      exit {status}
+    fi
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     fn write_natural_stop_codex(bin: &Path, branch: &str) {
         let script = bin.join("codex");
         fs::write(
@@ -1659,6 +1689,64 @@ esac
         assert!(!tracker.create_failed);
         assert_eq!(tracker.meta.pr_url.as_deref(), Some(url));
         assert!(meta.contains(url));
+    }
+
+    #[test]
+    fn apply_pr_metadata_logs_success_after_edit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-metadata-edit-success");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh_edit(&bin, 0);
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+
+        apply_pr_metadata(
+            &repo,
+            "https://github.example/unhappychoice/kobito/pull/1",
+            Some("test(runner): update metadata"),
+            Some("Updated body"),
+            &sink,
+        );
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        let args = fs::read_to_string(repo.join("gh-edit-args.txt")).unwrap();
+        assert!(log.contains("PR title/description updated"));
+        assert!(args.contains("--title test(runner): update metadata"));
+        assert!(args.contains("--body Updated body"));
+    }
+
+    #[test]
+    fn apply_pr_metadata_logs_edit_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-metadata-edit-failure");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh_edit(&bin, 7);
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+
+        apply_pr_metadata(
+            &repo,
+            "https://github.example/unhappychoice/kobito/pull/1",
+            Some("test(runner): update metadata"),
+            None,
+            &sink,
+        );
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("gh pr edit failed"));
+        assert!(log.contains("edit failed"));
     }
 
     #[tokio::test]
