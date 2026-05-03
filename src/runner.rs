@@ -543,10 +543,17 @@ async fn finalize_run(
     );
 }
 
+#[derive(Debug)]
 struct FinalizeRoundOutcome {
     ready: bool,
     title: Option<String>,
     body: Option<String>,
+}
+
+#[derive(Debug)]
+struct FinalizeReply {
+    outcome: FinalizeRoundOutcome,
+    summary: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -591,9 +598,8 @@ async fn run_finalize_round(
     }
 
     let text = outcome.final_message.as_deref()?;
-    let body_str = agent::strip_code_fence(text.trim());
-    let v: serde_json::Value = match serde_json::from_str(&body_str) {
-        Ok(v) => v,
+    let reply = match parse_finalize_reply(text) {
+        Ok(reply) => reply,
         Err(e) => {
             sink.note(&format!(
                 "finalize: agent reply was not valid JSON ({e}); stopping"
@@ -601,26 +607,47 @@ async fn run_finalize_round(
             return None;
         }
     };
-    let ready = v
-        .get("ready_for_review")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
-    let title = v
-        .get("pr_title")
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().chars().take(72).collect::<String>())
-        .filter(|s| !s.is_empty());
-    let body = v
-        .get("pr_body")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string());
-    if let Some(s) = v.get("summary").and_then(|x| x.as_str()) {
+    if let Some(s) = reply.summary.as_deref() {
         let trimmed = s.trim();
         if !trimmed.is_empty() {
             sink.note(&format!("finalize: agent says — {trimmed}"));
         }
     }
-    Some(FinalizeRoundOutcome { ready, title, body })
+    Some(reply.outcome)
+}
+
+fn parse_finalize_reply(text: &str) -> Result<FinalizeReply> {
+    let body_str = agent::strip_code_fence(text.trim());
+    let v: serde_json::Value = serde_json::from_str(&body_str)
+        .with_context(|| format!("agent reply was not valid JSON: {body_str}"))?;
+    let outcome = FinalizeRoundOutcome {
+        ready: v
+            .get("ready_for_review")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        title: finalize_reply_title(&v),
+        body: v
+            .get("pr_body")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string()),
+    };
+    Ok(FinalizeReply {
+        outcome,
+        summary: finalize_reply_summary(&v),
+    })
+}
+
+fn finalize_reply_title(v: &serde_json::Value) -> Option<String> {
+    v.get("pr_title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .filter(|s| !s.is_empty())
+}
+
+fn finalize_reply_summary(v: &serde_json::Value) -> Option<String> {
+    v.get("summary")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
 }
 
 fn apply_pr_metadata(
@@ -945,5 +972,40 @@ mod tests {
             ensure_finalize_prefix("https://example.com is a url"),
             "chore(finalize): https://example.com is a url"
         );
+    }
+
+    #[test]
+    fn parse_finalize_reply_accepts_fenced_ready_response() {
+        let reply = parse_finalize_reply(
+            "```json\n{\"ready_for_review\":true,\"pr_title\":\" test(scope): cover x \",\"pr_body\":\"body\",\"summary\":\"done\"}\n```",
+        )
+        .unwrap();
+        assert!(reply.outcome.ready);
+        assert_eq!(reply.outcome.title.as_deref(), Some("test(scope): cover x"));
+        assert_eq!(reply.outcome.body.as_deref(), Some("body"));
+        assert_eq!(reply.summary.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn parse_finalize_reply_defaults_missing_ready_to_false() {
+        let reply = parse_finalize_reply("{\"pr_body\":\"body\"}").unwrap();
+        assert!(!reply.outcome.ready);
+        assert_eq!(reply.outcome.title, None);
+        assert_eq!(reply.outcome.body.as_deref(), Some("body"));
+    }
+
+    #[test]
+    fn parse_finalize_reply_drops_blank_title_and_truncates_long_title() {
+        let blank = parse_finalize_reply("{\"pr_title\":\"   \"}").unwrap();
+        let long =
+            parse_finalize_reply(&format!("{{\"pr_title\":\"{}\"}}", "x".repeat(80))).unwrap();
+        assert_eq!(blank.outcome.title, None);
+        assert_eq!(long.outcome.title.unwrap().chars().count(), 72);
+    }
+
+    #[test]
+    fn parse_finalize_reply_rejects_invalid_json() {
+        let err = parse_finalize_reply("not json").unwrap_err();
+        assert!(err.to_string().contains("agent reply was not valid JSON"));
     }
 }
