@@ -1528,6 +1528,77 @@ esac
         );
     }
 
+    #[tokio::test]
+    async fn resume_continuous_reuses_existing_pr_without_redrafting() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("resume-existing-pr");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let previous_run = "2026-05-01T00-00-00";
+        let pr_url = "https://github.example/unhappychoice/kobito/pull/7";
+
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "unused");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let repo_root = fs::canonicalize(&repo).unwrap();
+        let remote_url = git::remote_url(&repo);
+        let project =
+            state::project_paths(state::project_id(&repo_root, remote_url.as_deref())).unwrap();
+        write_resume_meta(
+            &project,
+            state::RunMeta {
+                run_id: previous_run.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "main".to_string(),
+                goal: "resume coverage with existing pr".to_string(),
+                agent: "codex".to_string(),
+                pr_url: Some(pr_url.to_string()),
+                base_branch: None,
+            },
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = resume_continuous(ResumeArgs {
+            run: Some(previous_run.to_string()),
+            max_iterations: 1,
+            max_failures: 1,
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let resumed = fs::read_dir(project.root.join("runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap() != previous_run)
+            .unwrap();
+        let log = fs::read_to_string(resumed.join("log.ndjson")).unwrap();
+        let meta = fs::read_to_string(resumed.join("meta.json")).unwrap();
+        assert!(log.contains("kobito resume from 2026-05-01T00-00-00"));
+        assert!(!log.contains("asking agent for draft PR title and description"));
+        assert!(meta.contains(pr_url));
+        assert!(resumed.join("prompts/iter-0001.md").exists());
+    }
+
     #[test]
     fn pr_tracker_marks_create_failed_when_initial_push_fails() {
         let (_dir, run, sink) = temp_run("pr-tracker-push-failure");
