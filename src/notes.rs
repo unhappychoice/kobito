@@ -76,6 +76,31 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use tokio::process::Command;
+
+    struct FakeAgent {
+        script: &'static str,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn parse_event(&self, _: &str) -> Vec<agent::AgentEvent> {
+            vec![]
+        }
+    }
 
     fn unique_path(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -194,5 +219,53 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         assert!(append_section(&dir, 1, "x").is_err());
+    }
+
+    #[tokio::test]
+    async fn append_learning_returns_false_for_no_notes() {
+        let path = unique_path("append-learning-none");
+        let agent = FakeAgent {
+            script: "printf NO_NOTES",
+        };
+
+        let wrote = append_learning(&agent, Path::new("."), &path, 3, "goal", "diff")
+            .await
+            .unwrap();
+
+        assert!(!wrote);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn append_learning_writes_cleaned_agent_notes() {
+        let path = unique_path("append-learning-write");
+        let agent = FakeAgent {
+            script: "printf '```text\\n- keep this\\n```'",
+        };
+
+        let wrote = append_learning(&agent, Path::new("."), &path, 4, "goal", "diff")
+            .await
+            .unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(wrote);
+        assert!(contents.contains("## iteration 4 —"));
+        assert!(contents.contains("- keep this\n"));
+        assert!(!contents.contains("```"));
+    }
+
+    #[tokio::test]
+    async fn append_learning_propagates_agent_failure() {
+        let path = unique_path("append-learning-fail");
+        let agent = FakeAgent {
+            script: "printf nope >&2; exit 7",
+        };
+
+        let err = append_learning(&agent, Path::new("."), &path, 5, "goal", "diff")
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("fake exited with"));
+        assert!(!path.exists());
     }
 }

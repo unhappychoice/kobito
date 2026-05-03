@@ -76,6 +76,17 @@ fn pattern() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn unique_path(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kobito-tasks-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("tasks.md")
+    }
 
     #[test]
     fn parse_extracts_checkboxes_and_skips_other_lines() {
@@ -89,6 +100,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_treats_uppercase_x_as_completed() {
+        let b = Backlog::parse("- [X] done\n- [ ] todo\n");
+        assert_eq!(b.items.len(), 2);
+        assert!(b.items[0].completed);
+        assert!(!b.items[1].completed);
+    }
+
+    #[test]
+    fn from_file_loads_raw_backlog_and_items() {
+        let path = unique_path("from-file");
+        fs::write(&path, "heading\n- [ ] todo\n").unwrap();
+        let b = Backlog::from_file(&path).unwrap();
+        assert_eq!(b.raw, "heading\n- [ ] todo\n");
+        assert_eq!(b.items[0].body, "todo");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn mark_completed_rewrites_target_line_only() {
         let mut b = Backlog::parse("- [ ] one\n- [ ] two\n- [ ] three\n");
         b.mark_completed(1);
@@ -96,6 +125,14 @@ mod tests {
         assert!(b.raw.contains("- [ ] one"));
         assert!(b.raw.contains("- [ ] three"));
         assert!(b.items[1].completed);
+        assert!(!b.items[0].completed);
+    }
+
+    #[test]
+    fn mark_completed_ignores_non_task_line() {
+        let mut b = Backlog::parse("intro\n- [ ] one\n");
+        b.mark_completed(0);
+        assert_eq!(b.raw, "intro\n- [ ] one\n");
         assert!(!b.items[0].completed);
     }
 
@@ -112,5 +149,15 @@ mod tests {
         let mut b = Backlog::parse("- [ ] one\n");
         b.mark_completed(0);
         assert!(b.raw.ends_with('\n'));
+    }
+
+    #[test]
+    fn write_persists_current_raw_backlog() {
+        let path = unique_path("write");
+        let mut b = Backlog::parse("- [ ] one\n");
+        b.mark_completed(0);
+        b.write(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "- [x] one\n");
+        fs::remove_file(&path).ok();
     }
 }

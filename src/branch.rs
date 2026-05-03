@@ -36,6 +36,53 @@ fn clean(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
+
+    struct FakeAgent {
+        script: &'static str,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn parse_event(&self, _: &str) -> Vec<crate::agent::AgentEvent> {
+            vec![]
+        }
+    }
+
+    #[tokio::test]
+    async fn suggest_returns_cleaned_first_line_from_agent() {
+        let agent = FakeAgent {
+            script: "printf '\"feature/coverage/\"\\nexplanation\\n'",
+        };
+        let branch = suggest(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap();
+        assert_eq!(branch, "feature/coverage");
+    }
+
+    #[tokio::test]
+    async fn suggest_errors_when_agent_returns_empty_branch_name() {
+        let agent = FakeAgent {
+            script: "printf '   \\nexplanation\\n'",
+        };
+        let err = suggest(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("empty branch name"));
+    }
 
     #[test]
     fn clean_strips_quotes_and_trailing_dash() {

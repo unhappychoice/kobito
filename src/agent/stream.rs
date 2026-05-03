@@ -205,6 +205,34 @@ mod tests {
         }
     }
 
+    struct EventAgent;
+    impl Agent for EventAgent {
+        fn name(&self) -> &str {
+            "eventful"
+        }
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+        fn parse_event(&self, _: &str) -> Vec<AgentEvent> {
+            vec![
+                AgentEvent::ToolStart {
+                    tool: "shell".to_string(),
+                    summary: Some("inspect".to_string()),
+                },
+                AgentEvent::Usage(Usage {
+                    input_tokens: 1200,
+                    output_tokens: 34,
+                    cached_input_tokens: 56,
+                }),
+                AgentEvent::Message("progress".to_string()),
+                AgentEvent::Message(r#"{"natural_stop":true}"#.to_string()),
+            ]
+        }
+    }
+
     #[tokio::test]
     async fn run_oneshot_returns_stdout_on_success() {
         let mut cmd = Command::new("sh");
@@ -257,6 +285,27 @@ mod tests {
             .unwrap();
         assert!(outcome.natural_stop);
         assert!(outcome.task_complete);
+    }
+
+    #[tokio::test]
+    async fn run_streamed_collects_usage_and_final_message_from_events() {
+        let (sink, _dir) = open_sink("events");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf 'raw-agent-line\\n'");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let outcome = run_streamed(cmd, &EventAgent, &sink, cancelled)
+            .await
+            .unwrap();
+        assert_eq!(outcome.stdout, "progress\n{\"natural_stop\":true}\n");
+        assert_eq!(
+            outcome.final_message,
+            Some(r#"{"natural_stop":true}"#.into())
+        );
+        assert!(outcome.natural_stop);
+        assert!(!outcome.task_complete);
+        assert_eq!(outcome.usage.input_tokens, 1200);
+        assert_eq!(outcome.usage.output_tokens, 34);
+        assert_eq!(outcome.usage.cached_input_tokens, 56);
     }
 
     #[tokio::test]

@@ -81,6 +81,79 @@ fn fallback(goal: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::process::Command;
+
+    struct FakeAgent {
+        prompts: Arc<Mutex<Vec<String>>>,
+        script: &'static str,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn build_oneshot_command(&self, prompt: &str) -> Command {
+            self.prompts.lock().unwrap().push(prompt.to_string());
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn parse_event(&self, _: &str) -> Vec<crate::agent::AgentEvent> {
+            vec![]
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_message_returns_cleaned_agent_output() {
+        let prompts = Arc::new(Mutex::new(vec![]));
+        let agent = FakeAgent {
+            prompts: Arc::clone(&prompts),
+            script: "printf '```text\\nfeat(test): cover commit generation\\n```\\n'",
+        };
+
+        let message = generate_message(
+            &agent,
+            Path::new("."),
+            "diff --git a/src/lib.rs b/src/lib.rs",
+            "increase coverage",
+            &["test(cli): cover parsing".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let prompt = prompts.lock().unwrap().join("\n");
+        assert_eq!(message, "feat(test): cover commit generation");
+        assert!(prompt.contains("Existing project commit style"));
+        assert!(prompt.contains("- test(cli): cover parsing"));
+        assert!(prompt.contains("increase coverage"));
+    }
+
+    #[tokio::test]
+    async fn generate_message_falls_back_when_agent_returns_blank() {
+        let agent = FakeAgent {
+            prompts: Arc::new(Mutex::new(vec![])),
+            script: "printf '   \\n'",
+        };
+
+        let message = generate_message(
+            &agent,
+            Path::new("."),
+            "diff --git a/src/lib.rs b/src/lib.rs",
+            "\n  cover commit fallback\nmore detail",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(message, "cover commit fallback");
+    }
 
     #[test]
     fn truncate_returns_input_when_within_limit() {

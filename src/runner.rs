@@ -543,10 +543,17 @@ async fn finalize_run(
     );
 }
 
+#[derive(Debug)]
 struct FinalizeRoundOutcome {
     ready: bool,
     title: Option<String>,
     body: Option<String>,
+}
+
+#[derive(Debug)]
+struct FinalizeReply {
+    outcome: FinalizeRoundOutcome,
+    summary: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -591,9 +598,8 @@ async fn run_finalize_round(
     }
 
     let text = outcome.final_message.as_deref()?;
-    let body_str = agent::strip_code_fence(text.trim());
-    let v: serde_json::Value = match serde_json::from_str(&body_str) {
-        Ok(v) => v,
+    let reply = match parse_finalize_reply(text) {
+        Ok(reply) => reply,
         Err(e) => {
             sink.note(&format!(
                 "finalize: agent reply was not valid JSON ({e}); stopping"
@@ -601,26 +607,47 @@ async fn run_finalize_round(
             return None;
         }
     };
-    let ready = v
-        .get("ready_for_review")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
-    let title = v
-        .get("pr_title")
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().chars().take(72).collect::<String>())
-        .filter(|s| !s.is_empty());
-    let body = v
-        .get("pr_body")
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string());
-    if let Some(s) = v.get("summary").and_then(|x| x.as_str()) {
+    if let Some(s) = reply.summary.as_deref() {
         let trimmed = s.trim();
         if !trimmed.is_empty() {
             sink.note(&format!("finalize: agent says — {trimmed}"));
         }
     }
-    Some(FinalizeRoundOutcome { ready, title, body })
+    Some(reply.outcome)
+}
+
+fn parse_finalize_reply(text: &str) -> Result<FinalizeReply> {
+    let body_str = agent::strip_code_fence(text.trim());
+    let v: serde_json::Value = serde_json::from_str(&body_str)
+        .with_context(|| format!("agent reply was not valid JSON: {body_str}"))?;
+    let outcome = FinalizeRoundOutcome {
+        ready: v
+            .get("ready_for_review")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        title: finalize_reply_title(&v),
+        body: v
+            .get("pr_body")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string()),
+    };
+    Ok(FinalizeReply {
+        outcome,
+        summary: finalize_reply_summary(&v),
+    })
+}
+
+fn finalize_reply_title(v: &serde_json::Value) -> Option<String> {
+    v.get("pr_title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(72).collect::<String>())
+        .filter(|s| !s.is_empty())
+}
+
+fn finalize_reply_summary(v: &serde_json::Value) -> Option<String> {
+    v.get("summary")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
 }
 
 fn apply_pr_metadata(
@@ -874,6 +901,1461 @@ fn format_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentEvent;
+    use crate::test_support::ENV_LOCK;
+    use std::path::PathBuf;
+    use std::process;
+    use tokio::process::Command;
+
+    struct FakeAgent {
+        script: &'static str,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            Command::new("true")
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn parse_event(&self, _: &str) -> Vec<agent::AgentEvent> {
+            vec![]
+        }
+    }
+
+    struct StreamingFakeAgent {
+        script: &'static str,
+        oneshot_script: &'static str,
+    }
+
+    impl Agent for StreamingFakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn build_streaming_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.script);
+            cmd
+        }
+
+        fn build_oneshot_command(&self, _: &str) -> Command {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.oneshot_script);
+            cmd
+        }
+
+        fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
+            vec![AgentEvent::Message(line.to_string())]
+        }
+    }
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_run(prefix: &str) -> (TempDir, state::RunPaths, LogSink) {
+        let nanos = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let root =
+            std::env::temp_dir().join(format!("kobito-runner-{prefix}-{}-{nanos}", process::id()));
+        let project = state::ProjectPaths {
+            id: "test-project".to_string(),
+            root: root.join("project"),
+        };
+        let run = state::RunPaths {
+            project,
+            run_dir: root.join("run"),
+            log_file: root.join("run/log.ndjson"),
+            prompts_dir: root.join("run/prompts"),
+            timestamp: "run-1".to_string(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        fs::write(&run.log_file, "").unwrap();
+        let sink = LogSink::open(&run.log_file, None).unwrap();
+        (TempDir(root), run, sink)
+    }
+
+    fn flag(value: bool) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(value))
+    }
+
+    fn set_env(name: &str, value: Option<&std::ffi::OsStr>) {
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    fn prefixed_path(bin: &Path, old: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+        let mut paths = vec![bin.to_path_buf()];
+        paths.extend(std::env::split_paths(&old.unwrap_or_default()));
+        std::env::join_paths(paths).unwrap()
+    }
+
+    fn temp_repo(run: &state::RunPaths) -> PathBuf {
+        let repo = run.run_dir.parent().unwrap().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git_cmd(&repo, &["init", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.email", "kobito@example.test"]);
+        git_cmd(&repo, &["config", "user.name", "kobito"]);
+        git_cmd(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("README.md"), "start\n").unwrap();
+        git_cmd(&repo, &["add", "-A"]);
+        git_cmd(&repo, &["commit", "-m", "chore: initial"]);
+        repo
+    }
+
+    fn git_cmd(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
+    fn write_fake_gh(bin: &Path, url: &str) {
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "pr create")
+    test -f .git/kobito-test-gh-success || exit 1
+    printf '%s\n' '{url}'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn write_fake_gh_edit(bin: &Path, status: i32) {
+        let script = bin.join("gh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "pr edit")
+    printf '%s\n' "$*" > gh-edit-args.txt
+    if [ {status} -ne 0 ]; then
+      printf 'edit failed\n' >&2
+      exit {status}
+    fi
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn write_natural_stop_codex(bin: &Path, branch: &str) {
+        let script = bin.join("codex");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"natural_stop\":true}"}}'
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2,"cached_input_tokens":3}}'
+    ;;
+  *)
+    printf '%s\n' '__BRANCH__'
+    ;;
+esac
+"#
+            .replace("__BRANCH__", branch),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn write_remote_commit_codex(bin: &Path) {
+        let script = bin.join("codex");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    printf 'generated\n' > generated.txt
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"natural_stop\":false}"}}'
+    ;;
+  *"Suggest a single git branch name"*)
+    printf 'feature/remote-run\n'
+    ;;
+  *"Suggest a draft GitHub Pull Request title"*)
+    printf '%s\n' '{"title":"test(runner): cover remote run","body":"Covers the remote-backed continuous path."}'
+    ;;
+  *"Generate a single commit message"*)
+    printf 'test(runner): cover remote run\n'
+    ;;
+  *"Distill what is useful"*)
+    printf 'NO_NOTES\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn single_run_dir(state_home: &Path) -> PathBuf {
+        fs::read_dir(state_home.join("kobito/projects"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .flat_map(|entry| fs::read_dir(entry.path().join("runs")).unwrap())
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .next()
+            .unwrap()
+    }
+
+    fn tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
+        PrTracker::new(
+            "main".to_string(),
+            run,
+            state::RunMeta {
+                run_id: run.timestamp.clone(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: "increase coverage".to_string(),
+                agent: "fake".to_string(),
+                pr_url: Some("https://example.test/pull/1".to_string()),
+                base_branch: Some("main".to_string()),
+            },
+            "draft title".to_string(),
+            "draft body".to_string(),
+        )
+    }
+
+    fn draft_tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
+        PrTracker::new(
+            "main".to_string(),
+            run,
+            state::RunMeta {
+                run_id: run.timestamp.clone(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: "increase coverage".to_string(),
+                agent: "fake".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+            "draft title".to_string(),
+            "draft body".to_string(),
+        )
+    }
+
+    fn resume_project(root: &Path) -> state::ProjectPaths {
+        let project = state::ProjectPaths {
+            id: "test-project".to_string(),
+            root: root.join("project"),
+        };
+        fs::create_dir_all(project.root.join("runs")).unwrap();
+        project
+    }
+
+    fn write_resume_run(project: &state::ProjectPaths, run_id: &str, goal: &str) {
+        let run_dir = project.root.join("runs").join(run_id);
+        let run = state::RunPaths {
+            project: project.clone(),
+            run_dir: run_dir.clone(),
+            log_file: run_dir.join("log.ndjson"),
+            prompts_dir: run_dir.join("prompts"),
+            timestamp: run_id.to_string(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        state::write_run_meta(
+            &run,
+            &state::RunMeta {
+                run_id: run_id.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: goal.to_string(),
+                agent: "fake".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+
+    fn write_resume_meta(project: &state::ProjectPaths, meta: state::RunMeta) {
+        let run_dir = project.root.join("runs").join(&meta.run_id);
+        let run = state::RunPaths {
+            project: project.clone(),
+            run_dir: run_dir.clone(),
+            log_file: run_dir.join("log.ndjson"),
+            prompts_dir: run_dir.join("prompts"),
+            timestamp: meta.run_id.clone(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        state::write_run_meta(&run, &meta).unwrap();
+    }
+
+    #[test]
+    fn pick_run_to_resume_errors_when_project_has_no_runs() {
+        let (_dir, run, _sink) = temp_run("resume-empty");
+        let project = resume_project(run.run_dir.parent().unwrap());
+
+        let err = pick_run_to_resume(&project).unwrap_err();
+
+        assert!(err.to_string().contains("no previous runs to resume"));
+    }
+
+    #[test]
+    fn pick_run_to_resume_returns_latest_run_without_terminal() {
+        let (_dir, run, _sink) = temp_run("resume-latest");
+        let project = resume_project(run.run_dir.parent().unwrap());
+        write_resume_run(&project, "2026-05-01T00-00-00", "older goal");
+        write_resume_run(&project, "2026-05-02T00-00-00", "newer goal");
+
+        let selected = pick_run_to_resume(&project).unwrap();
+
+        assert_eq!(selected, "2026-05-02T00-00-00");
+    }
+
+    #[tokio::test]
+    async fn run_continuous_rejects_vars_without_preset() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let (_dir, run, _sink) = temp_run("continuous-var-without-preset");
+        let repo = temp_repo(&run);
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec!["area=runner".to_string()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--var requires --preset")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_continuous_rejects_dirty_worktree_by_default() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let (_dir, run, _sink) = temp_run("continuous-dirty");
+        let repo = temp_repo(&run);
+        fs::write(repo.join("README.md"), "dirty\n").unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("working tree is dirty")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_continuous_records_no_remote_run_and_stops_naturally() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-natural-stop");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "feature/continuous");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 3,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert!(branch.starts_with("feature/continuous-"));
+        git::ensure_clean(&repo).unwrap();
+
+        let project_root = state_home.join("kobito").join("projects");
+        let run_dir = fs::read_dir(project_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .flat_map(|entry| fs::read_dir(entry.path().join("runs")).unwrap())
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .next()
+            .unwrap();
+        let log = fs::read_to_string(run_dir.join("log.ndjson")).unwrap();
+        assert!(log.contains("no git remote configured"));
+        assert!(log.contains("agent reported natural_stop"));
+        assert!(run_dir.join("prompts/iter-0001.md").exists());
+        assert!(!run_dir.join("prompts/iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_continuous_loads_preset_goal() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-preset");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+
+        fs::create_dir_all(repo.join(".kobito/presets")).unwrap();
+        fs::write(
+            repo.join(".kobito/presets/coverage.md"),
+            "cover {{area}} carefully",
+        )
+        .unwrap();
+        git_cmd(&repo, &["add", ".kobito/presets/coverage.md"]);
+        git_cmd(&repo, &["commit", "-m", "test: add preset"]);
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "feature/preset");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: None,
+            preset: Some("coverage".to_string()),
+            vars: vec!["area=src/runner.rs".to_string()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let prompt =
+            fs::read_to_string(single_run_dir(&state_home).join("prompts/iter-0001.md")).unwrap();
+        assert!(prompt.contains("cover src/runner.rs carefully"));
+    }
+
+    #[tokio::test]
+    async fn run_continuous_opens_draft_pr_after_first_remote_commit() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-remote-pr");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let url = "https://github.example/unhappychoice/kobito/pull/42";
+
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::create_dir_all(&bin).unwrap();
+        write_remote_commit_codex(&bin);
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let run_dir = single_run_dir(&state_home);
+        let log = fs::read_to_string(run_dir.join("log.ndjson")).unwrap();
+        let meta = fs::read_to_string(run_dir.join("meta.json")).unwrap();
+        assert!(branch.starts_with("feature/remote-run-"));
+        assert!(repo.join("generated.txt").exists());
+        assert!(log.contains("PR title drafted: test(runner): cover remote run"));
+        assert!(log.contains("PR opened (draft)"));
+        assert!(meta.contains(url));
+    }
+
+    #[tokio::test]
+    async fn resume_continuous_copies_notes_and_stops_naturally() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("resume-natural-stop");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let previous_run = "2026-05-01T00-00-00";
+
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "unused");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let repo_root = fs::canonicalize(&repo).unwrap();
+        let project = state::project_paths(state::project_id(&repo_root, None)).unwrap();
+        write_resume_meta(
+            &project,
+            state::RunMeta {
+                run_id: previous_run.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "main".to_string(),
+                goal: "resume coverage work".to_string(),
+                agent: "codex".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+        );
+        fs::write(
+            project
+                .root
+                .join("runs")
+                .join(previous_run)
+                .join("notes.md"),
+            "## iteration 1\n\n- keep this learning\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = resume_continuous(ResumeArgs {
+            run: Some(previous_run.to_string()),
+            max_iterations: 2,
+            max_failures: 1,
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(branch, "main");
+        let resumed = fs::read_dir(project.root.join("runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap() != previous_run)
+            .unwrap();
+        let log = fs::read_to_string(resumed.join("log.ndjson")).unwrap();
+        assert!(log.contains("kobito resume from 2026-05-01T00-00-00"));
+        assert!(log.contains("no git remote configured"));
+        assert!(log.contains("agent reported natural_stop"));
+        assert!(resumed.join("prompts/iter-0001.md").exists());
+        assert_eq!(
+            fs::read_to_string(resumed.join("notes.md")).unwrap(),
+            "## iteration 1\n\n- keep this learning\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_continuous_reuses_existing_pr_without_redrafting() {
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("resume-existing-pr");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let previous_run = "2026-05-01T00-00-00";
+        let pr_url = "https://github.example/unhappychoice/kobito/pull/7";
+
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "unused");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let repo_root = fs::canonicalize(&repo).unwrap();
+        let remote_url = git::remote_url(&repo);
+        let project =
+            state::project_paths(state::project_id(&repo_root, remote_url.as_deref())).unwrap();
+        write_resume_meta(
+            &project,
+            state::RunMeta {
+                run_id: previous_run.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "main".to_string(),
+                goal: "resume coverage with existing pr".to_string(),
+                agent: "codex".to_string(),
+                pr_url: Some(pr_url.to_string()),
+                base_branch: None,
+            },
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = resume_continuous(ResumeArgs {
+            run: Some(previous_run.to_string()),
+            max_iterations: 1,
+            max_failures: 1,
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let resumed = fs::read_dir(project.root.join("runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap() != previous_run)
+            .unwrap();
+        let log = fs::read_to_string(resumed.join("log.ndjson")).unwrap();
+        let meta = fs::read_to_string(resumed.join("meta.json")).unwrap();
+        assert!(log.contains("kobito resume from 2026-05-01T00-00-00"));
+        assert!(!log.contains("asking agent for draft PR title and description"));
+        assert!(meta.contains(pr_url));
+        assert!(resumed.join("prompts/iter-0001.md").exists());
+    }
+
+    #[test]
+    fn pr_tracker_marks_create_failed_when_initial_push_fails() {
+        let (_dir, run, sink) = temp_run("pr-tracker-push-failure");
+        let repo = temp_repo(&run);
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "feature/test", &sink);
+
+        assert!(tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url, None);
+    }
+
+    #[test]
+    fn pr_tracker_marks_create_failed_when_draft_create_fails() {
+        let (_dir, run, sink) = temp_run("pr-tracker-create-failure");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        assert!(tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url, None);
+    }
+
+    #[test]
+    fn pr_tracker_persists_url_when_draft_create_succeeds() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-tracker-create-success");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let url = "https://github.example/unhappychoice/kobito/pull/1";
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        set_env("PATH", old_path.as_deref());
+        let meta = fs::read_to_string(run.run_dir.join("meta.json")).unwrap();
+        assert!(!tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url.as_deref(), Some(url));
+        assert!(meta.contains(url));
+    }
+
+    #[test]
+    fn pr_tracker_logs_meta_persist_failure_after_draft_create() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-tracker-persist-failure");
+        let repo = temp_repo(&run);
+        let remote = run.run_dir.parent().unwrap().join("origin.git");
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let url = "https://github.example/unhappychoice/kobito/pull/1";
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir(run.run_dir.join("meta.json")).unwrap();
+        write_fake_gh(&bin, url);
+        fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        git_cmd(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_cmd(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let mut tracker = draft_tracker_for(&run);
+
+        tracker.on_commit(&repo, "main", &sink);
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!tracker.create_failed);
+        assert_eq!(tracker.meta.pr_url.as_deref(), Some(url));
+        assert!(log.contains("PR opened (draft)"));
+        assert!(log.contains("persist meta failed"));
+    }
+
+    #[test]
+    fn apply_pr_metadata_logs_success_after_edit() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-metadata-edit-success");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh_edit(&bin, 0);
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+
+        apply_pr_metadata(
+            &repo,
+            "https://github.example/unhappychoice/kobito/pull/1",
+            Some("test(runner): update metadata"),
+            Some("Updated body"),
+            &sink,
+        );
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        let args = fs::read_to_string(repo.join("gh-edit-args.txt")).unwrap();
+        assert!(log.contains("PR title/description updated"));
+        assert!(args.contains("--title test(runner): update metadata"));
+        assert!(args.contains("--body Updated body"));
+    }
+
+    #[test]
+    fn apply_pr_metadata_logs_edit_failure() {
+        let _guard = ENV_LOCK.blocking_lock();
+        let old_path = std::env::var_os("PATH");
+        let (_dir, run, sink) = temp_run("pr-metadata-edit-failure");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        write_fake_gh_edit(&bin, 7);
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+
+        apply_pr_metadata(
+            &repo,
+            "https://github.example/unhappychoice/kobito/pull/1",
+            Some("test(runner): update metadata"),
+            None,
+            &sink,
+        );
+
+        set_env("PATH", old_path.as_deref());
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("gh pr edit failed"));
+        assert!(log.contains("edit failed"));
+    }
+
+    #[tokio::test]
+    async fn run_iterations_stops_when_agent_reports_natural_stop() {
+        let (_dir, run, sink) = temp_run("natural-stop");
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"natural_stop":true}\n'"#,
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_exits_before_prompt_when_finalize_requested() {
+        let (_dir, run, sink) = temp_run("finalize-requested");
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(true),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(!run.prompts_dir.join("iter-0001.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_exits_before_prompt_when_cancelled() {
+        let (_dir, run, sink) = temp_run("cancelled-before-prompt");
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: Path::new("."),
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(true),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert!(!run.prompts_dir.join("iter-0001.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_commits_agent_changes() {
+        let (_dir, run, sink) = temp_run("commit-changes");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'generated\n' > generated.txt; printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "printf 'increase coverage\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 1,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert!(repo.join("generated.txt").exists());
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "increase coverage"
+        );
+        assert!(state::notes_path(&run).exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_keeps_commit_when_notes_update_fails() {
+        let (_dir, run, sink) = temp_run("notes-update-fails");
+        let repo = temp_repo(&run);
+        fs::create_dir_all(state::notes_path(&run)).unwrap();
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'generated\n' > generated.txt; printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "printf 'test(runner): keep commit without notes\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 1,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "test(runner): keep commit without notes"
+        );
+        assert!(
+            fs::read_to_string(&run.log_file)
+                .unwrap()
+                .contains("notes update failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_iterations_skips_commit_when_agent_produces_no_diff() {
+        let (_dir, run, sink) = temp_run("no-diff");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "exit 99",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 2,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        let commit_count = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(String::from_utf8(commit_count.stdout).unwrap().trim(), "1");
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(run.prompts_dir.join("iter-0002.md").exists());
+        assert!(!state::notes_path(&run).exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_resets_worktree_after_agent_failure() {
+        let (_dir, run, sink) = temp_run("agent-failure");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: "printf 'changed\n' > README.md; exit 7",
+            oneshot_script: "true",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "start\n"
+        );
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_retries_after_transient_agent_failure() {
+        let (_dir, run, sink) = temp_run("transient-agent-failure");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: "if [ ! -f attempt ]; then touch attempt; printf 'changed\n' > README.md; exit 7; fi; printf 'generated\n' > generated.txt; printf '{\"natural_stop\":false}\n'",
+            oneshot_script: "printf 'test(runner): commit after retry\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 2,
+            max_failures: 2,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "start\n"
+        );
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "test(runner): commit after retry"
+        );
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_leaves_worktree_when_cancelled_during_agent_failure() {
+        let (_dir, run, sink) = temp_run("cancelled-agent-failure");
+        let repo = temp_repo(&run);
+        let cancelled = flag(false);
+        let agent = StreamingFakeAgent {
+            script: "printf 'changed\n' > README.md; sleep 0.4; exit 7",
+            oneshot_script: "true",
+        };
+        let cancel_task = {
+            let cancelled = cancelled.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                cancelled.store(true, Ordering::SeqCst);
+            })
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled,
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        cancel_task.await.unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "changed\n"
+        );
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_returns_ready_metadata_from_agent_reply() {
+        let (_dir, run, sink) = temp_run("finalize-ready");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"ready_for_review":true,"pr_title":" test(runner): finalize ","pr_body":"ready body","summary":"checked"}\n'"#,
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.ready);
+        assert_eq!(outcome.title.as_deref(), Some("test(runner): finalize"));
+        assert_eq!(outcome.body.as_deref(), Some("ready body"));
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_on_invalid_agent_reply() {
+        let (_dir, run, sink) = temp_run("finalize-invalid-json");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "printf 'not json\n'",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_when_diff_fails() {
+        let (_dir, run, sink) = temp_run("finalize-diff-fails");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_when_agent_fails() {
+        let (_dir, run, sink) = temp_run("finalize-agent-fails");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 7",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_without_final_message() {
+        let (_dir, run, sink) = temp_run("finalize-no-final-message");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "true",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_when_commit_message_fails() {
+        let (_dir, run, sink) = temp_run("finalize-commit-message-fails");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'fixed\n' > README.md; printf '{"ready_for_review":false,"summary":"fixed"}\n'"#,
+            oneshot_script: "exit 7",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_commits_agent_fixes_with_finalize_prefix() {
+        let (_dir, run, sink) = temp_run("finalize-commit-fixes");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'fixed\n' > README.md; printf '{"ready_for_review":false,"summary":"fixed lint"}\n'"#,
+            oneshot_script: "printf 'fix(runner): polish finalize path\n\nKeep the PR clean.\n'",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert!(!outcome.ready);
+        assert_eq!(
+            fs::read_to_string(repo.join("README.md")).unwrap(),
+            "fixed\n"
+        );
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "chore(finalize): polish finalize path"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_run_skips_when_no_pr_url_is_recorded() {
+        let (_dir, run, sink) = temp_run("finalize-no-pr-url");
+        let mut tracker = draft_tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        finalize_run(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("finalize: no PR URL recorded; skipping"));
+    }
+
+    #[tokio::test]
+    async fn finalize_run_declines_when_stdin_is_not_terminal() {
+        let (_dir, run, sink) = temp_run("finalize-declined");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        finalize_run(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("finalize: declined; PR left in draft"));
+    }
 
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
@@ -945,5 +2427,129 @@ mod tests {
             ensure_finalize_prefix("https://example.com is a url"),
             "chore(finalize): https://example.com is a url"
         );
+    }
+
+    #[test]
+    fn ensure_finalize_prefix_keeps_malformed_conventional_subjects() {
+        assert_eq!(
+            ensure_finalize_prefix("feat(scope: missing close"),
+            "chore(finalize): feat(scope: missing close"
+        );
+        assert_eq!(
+            ensure_finalize_prefix("Fix(scope): uppercase type"),
+            "chore(finalize): Fix(scope): uppercase type"
+        );
+    }
+
+    #[test]
+    fn format_usage_compacts_large_token_counts() {
+        let usage = agent::Usage {
+            input_tokens: 42,
+            output_tokens: 12_345,
+            cached_input_tokens: 1_234_567,
+        };
+
+        assert_eq!(format_usage(&usage), "in 42 · out 12.3k · cached 1.2M");
+    }
+
+    #[test]
+    fn parse_finalize_reply_accepts_fenced_ready_response() {
+        let reply = parse_finalize_reply(
+            "```json\n{\"ready_for_review\":true,\"pr_title\":\" test(scope): cover x \",\"pr_body\":\"body\",\"summary\":\"done\"}\n```",
+        )
+        .unwrap();
+        assert!(reply.outcome.ready);
+        assert_eq!(reply.outcome.title.as_deref(), Some("test(scope): cover x"));
+        assert_eq!(reply.outcome.body.as_deref(), Some("body"));
+        assert_eq!(reply.summary.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn parse_finalize_reply_defaults_missing_ready_to_false() {
+        let reply = parse_finalize_reply("{\"pr_body\":\"body\"}").unwrap();
+        assert!(!reply.outcome.ready);
+        assert_eq!(reply.outcome.title, None);
+        assert_eq!(reply.outcome.body.as_deref(), Some("body"));
+    }
+
+    #[test]
+    fn parse_finalize_reply_drops_blank_title_and_truncates_long_title() {
+        let blank = parse_finalize_reply("{\"pr_title\":\"   \"}").unwrap();
+        let long =
+            parse_finalize_reply(&format!("{{\"pr_title\":\"{}\"}}", "x".repeat(80))).unwrap();
+        assert_eq!(blank.outcome.title, None);
+        assert_eq!(long.outcome.title.unwrap().chars().count(), 72);
+    }
+
+    #[test]
+    fn parse_finalize_reply_rejects_invalid_json() {
+        let err = parse_finalize_reply("not json").unwrap_err();
+        assert!(err.to_string().contains("agent reply was not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_accepts_fenced_json() {
+        let agent = FakeAgent {
+            script: r#"printf '```json\n{"title":" test(runner): cover metadata ","body":" body text "}\n```'"#,
+        };
+        let (title, body) = suggest_pr_metadata(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap();
+
+        assert_eq!(title, "test(runner): cover metadata");
+        assert_eq!(body, "body text");
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_defaults_blank_fields() {
+        let agent = FakeAgent {
+            script: r#"printf '{"title":"   ","body":"   "}'"#,
+        };
+        let (title, body) = suggest_pr_metadata(&agent, Path::new("."), " increase coverage ")
+            .await
+            .unwrap();
+
+        assert_eq!(title, "kobito run");
+        assert_eq!(body, "kobito is working on:\n\nincrease coverage");
+    }
+
+    #[tokio::test]
+    async fn suggest_pr_metadata_rejects_invalid_json() {
+        let agent = FakeAgent {
+            script: "printf 'not json'",
+        };
+        let err = suggest_pr_metadata(&agent, Path::new("."), "increase coverage")
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("agent reply was not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn ask_pr_metadata_returns_agent_suggestion() {
+        let (_dir, _run, sink) = temp_run("ask-pr-metadata-ok");
+        let agent = FakeAgent {
+            script: r#"printf '{"title":"test(runner): cover pr metadata","body":"planned work"}'"#,
+        };
+
+        let (title, body) =
+            ask_pr_metadata(&agent, Path::new("."), "increase coverage", &sink).await;
+
+        assert_eq!(title, "test(runner): cover pr metadata");
+        assert_eq!(body, "planned work");
+    }
+
+    #[tokio::test]
+    async fn ask_pr_metadata_falls_back_when_agent_fails() {
+        let (_dir, _run, sink) = temp_run("ask-pr-metadata-fallback");
+        let agent = FakeAgent {
+            script: "printf 'not json'",
+        };
+
+        let (title, body) =
+            ask_pr_metadata(&agent, Path::new("."), " increase coverage ", &sink).await;
+
+        assert_eq!(title, "kobito run");
+        assert_eq!(body, "kobito is working on:\n\nincrease coverage");
     }
 }
