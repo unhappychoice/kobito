@@ -269,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_rejects_vars_without_preset() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let dir = unique_tmp("var-without-preset");
         let repo = dir.0.join("repo");
@@ -295,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_seeds_empty_tasks_and_exits_when_none_are_pending() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
         let dir = unique_tmp("no-pending");
@@ -336,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_processes_pending_task_without_completion() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -385,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_loads_preset_into_task_prompt() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -433,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_uses_fallback_branch_when_agent_suggests_blank() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -477,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_skips_task_when_branch_creation_fails() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -532,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_resets_tracked_changes_after_agent_failure() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -594,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_commits_completed_task_and_marks_backlog_done() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -658,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_leaves_completed_task_open_when_pr_creation_fails() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");

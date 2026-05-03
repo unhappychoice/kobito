@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_tasks_edit_reports_editor_failure() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let original_dir = std::env::current_dir().unwrap();
         let repo = temp_repo("kobito-cli-tasks-edit");
         let state = temp_dir("kobito-cli-state");
@@ -310,14 +310,14 @@ mod tests {
         set_env("XDG_STATE_HOME", Some(state.to_str().unwrap()));
 
         let cli = Cli::parse_from(["kobito", "tasks", "edit"]);
-        let err = dispatch(cli).await.unwrap_err();
+        let result = dispatch(cli).await;
 
         set_env("EDITOR", editor.as_deref());
         set_env("VISUAL", visual.as_deref());
         set_env("XDG_STATE_HOME", xdg_state_home.as_deref());
         std::env::set_current_dir(original_dir).unwrap();
 
-        assert!(err.to_string().contains("editor exited"));
+        assert!(result.unwrap_err().to_string().contains("editor exited"));
     }
 
     fn temp_repo(prefix: &str) -> PathBuf {

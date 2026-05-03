@@ -1,3 +1,3 @@
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 
-pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::const_new(());

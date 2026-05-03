@@ -1266,7 +1266,7 @@ esac
 
     #[tokio::test]
     async fn run_continuous_rejects_vars_without_preset() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let (_dir, run, _sink) = temp_run("continuous-var-without-preset");
         let repo = temp_repo(&run);
@@ -1294,7 +1294,7 @@ esac
 
     #[tokio::test]
     async fn run_continuous_rejects_dirty_worktree_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let (_dir, run, _sink) = temp_run("continuous-dirty");
         let repo = temp_repo(&run);
@@ -1323,7 +1323,7 @@ esac
 
     #[tokio::test]
     async fn run_continuous_records_no_remote_run_and_stops_naturally() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -1379,7 +1379,7 @@ esac
 
     #[tokio::test]
     async fn run_continuous_loads_preset_goal() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -1428,7 +1428,7 @@ esac
 
     #[tokio::test]
     async fn run_continuous_opens_draft_pr_after_first_remote_commit() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -1484,7 +1484,7 @@ esac
 
     #[tokio::test]
     async fn resume_continuous_copies_notes_and_stops_naturally() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -1560,7 +1560,7 @@ esac
 
     #[tokio::test]
     async fn resume_continuous_reuses_existing_pr_without_redrafting() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
         let old_path = std::env::var_os("PATH");
         let old_xdg = std::env::var_os("XDG_STATE_HOME");
@@ -1661,7 +1661,7 @@ esac
 
     #[test]
     fn pr_tracker_persists_url_when_draft_create_succeeds() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.blocking_lock();
         let old_path = std::env::var_os("PATH");
         let (_dir, run, sink) = temp_run("pr-tracker-create-success");
         let repo = temp_repo(&run);
@@ -1693,7 +1693,7 @@ esac
 
     #[test]
     fn pr_tracker_logs_meta_persist_failure_after_draft_create() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.blocking_lock();
         let old_path = std::env::var_os("PATH");
         let (_dir, run, sink) = temp_run("pr-tracker-persist-failure");
         let repo = temp_repo(&run);
@@ -1727,7 +1727,7 @@ esac
 
     #[test]
     fn apply_pr_metadata_logs_success_after_edit() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.blocking_lock();
         let old_path = std::env::var_os("PATH");
         let (_dir, run, sink) = temp_run("pr-metadata-edit-success");
         let repo = temp_repo(&run);
@@ -1757,7 +1757,7 @@ esac
 
     #[test]
     fn apply_pr_metadata_logs_edit_failure() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.blocking_lock();
         let old_path = std::env::var_os("PATH");
         let (_dir, run, sink) = temp_run("pr-metadata-edit-failure");
         let repo = temp_repo(&run);
