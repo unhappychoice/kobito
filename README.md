@@ -8,6 +8,50 @@ or [Codex](https://github.com/openai/codex) on your repository,
 committing each iteration with an LLM-generated message that follows
 the project's own conventions, until you stop it.
 
+## Installation
+
+### Using Install Script (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/unhappychoice/kobito/main/install.sh | bash
+```
+
+Drops the binary in `~/.local/bin` by default. Override with
+`INSTALL_DIR=/usr/local/bin` or pin a version with
+`bash install.sh v0.1.0`.
+
+### Using Homebrew
+
+```bash
+brew install unhappychoice/tap/kobito
+```
+
+### Using Cargo
+
+```bash
+cargo install kobito
+```
+
+### From Source
+
+```bash
+git clone https://github.com/unhappychoice/kobito.git
+cd kobito
+cargo install --path .
+```
+
+Pre-built archives for `linux x86_64 / aarch64`, `macOS x86_64 /
+aarch64`, and `windows x86_64` are attached to every
+[GitHub release](https://github.com/unhappychoice/kobito/releases).
+
+### Requirements
+
+Either the [`claude`](https://github.com/anthropics/claude-code) or
+[`codex`](https://github.com/openai/codex) CLI on `PATH` (see
+`--agent` below). Iteration mode additionally requires the
+[`gh`](https://cli.github.com/) CLI authenticated for the project's
+remote.
+
 ## Features
 
 - `cont` mode — one branch, many commits, run until you stop it
@@ -23,62 +67,22 @@ Project conventions — output language, code style, commit format, branch
 names — are deferred to the agent's own memory files (`CLAUDE.md` /
 `AGENTS.md`). kobito does not inject or pin anything itself.
 
-## Install
-
-### Homebrew (macOS / Linux)
-
-```sh
-brew install unhappychoice/tap/kobito
-```
-
-### Install script (macOS / Linux)
-
-```sh
-curl -sSL https://raw.githubusercontent.com/unhappychoice/kobito/main/install.sh | bash
-```
-
-Drops the binary in `~/.local/bin` by default. Override with
-`INSTALL_DIR=/usr/local/bin` or pin a version with
-`bash install.sh v0.1.0`.
-
-### Cargo
-
-```sh
-cargo install kobito
-```
-
-### From source
-
-```sh
-cargo install --path .
-```
-
-Pre-built archives for `linux x86_64 / aarch64`, `macOS x86_64 /
-aarch64`, and `windows x86_64` are attached to every
-[GitHub release](https://github.com/unhappychoice/kobito/releases).
-
-Requires either the [`claude`](https://github.com/anthropics/claude-code)
-or [`codex`](https://github.com/openai/codex) CLI on `PATH` (see
-`--agent` below). Iteration mode additionally requires the
-[`gh`](https://cli.github.com/) CLI authenticated for the project's
-remote.
-
 ## Usage
 
-### cont
+### `cont`
 
 Pursue a single open-ended goal on one working branch:
 
-```sh
+```bash
 # from inside a clean git repo
 kobito cont --prompt "Increase test coverage in src/"
 ```
 
-### iter
+### `iter`
 
 Consume a backlog of small tasks, one branch + PR per task:
 
-```sh
+```bash
 # seed the backlog (committed to the project)
 cat > .kobito/tasks.md <<'EOF'
 - [ ] Add /healthz endpoint
@@ -91,7 +95,7 @@ kobito iter
 
 Or point at an explicit backlog file:
 
-```sh
+```bash
 kobito iter --backlog ./tasks.md
 ```
 
@@ -99,7 +103,7 @@ The first run copies `.kobito/tasks.md` (or the file passed via `--backlog`)
 into the state directory. From then on the state copy is the source of truth —
 edit it through:
 
-```sh
+```bash
 kobito tasks edit
 ```
 
@@ -107,7 +111,7 @@ For each unchecked item, kobito branches off the starting branch as
 `kobito/task-<n>-<slug>`, iterates until the agent emits `TASK_COMPLETE`,
 runs `gh pr create`, and marks the line `[x]` in the state copy.
 
-### presets
+### Presets
 
 Reuse a Markdown template across runs and projects. Place the file at:
 
@@ -118,7 +122,7 @@ Resolution checks (1) first, then (2). Missing preset → error.
 
 `{{var}}` placeholders are substituted from `--var key=value` (repeatable). Unresolved variables abort the run before any branch is created.
 
-```sh
+```bash
 # ~/.config/kobito/presets/coverage.md
 # Increase test coverage for {{path}}. Aim for {{target}}% line coverage.
 
@@ -130,9 +134,29 @@ In `cont` mode `--preset` is **mutually exclusive with `--prompt`** — the reso
 
 In `iter` mode each task in `tasks.md` is its own goal, so `--preset` instead acts as **framing prepended to every task prompt**:
 
-```sh
+```bash
 kobito iter --preset small-feature --backlog tasks.md
 ```
+
+### Resuming
+
+```bash
+# interactive picker — shows the 10 most recent runs
+kobito resume
+
+# or resume a specific run id (the timestamp dir name)
+kobito resume --run 2026-05-01T12-00-00
+```
+
+`kobito resume` without `--run` opens an arrow-key picker listing the most
+recent runs (id, branch, first line of the goal). When there is only one
+prior run, or when stdin is not a TTY (CI, pipes), it auto-picks the
+latest.
+
+Resume re-uses the original branch and agent from the run's
+`meta.json`, opens a new run directory, and copies the previous
+`notes.md` as the starting memory so the loop picks up with what
+the earlier iterations learned.
 
 ### Common options
 
@@ -146,6 +170,18 @@ kobito iter --preset small-feature --backlog tasks.md
 | `--max-failures`    | `3`       | give up after N consecutive failures        |
 | `--agent`           | `claude`  | `claude` (alias `claude-code`) or `codex`   |
 | `--allow-dirty`     | `false`   | skip the clean-tree check                   |
+
+## How it works
+
+Each iteration:
+
+1. Build a prompt: cross-iteration notes (if any) + the goal + a `NATURAL_STOP` / `TASK_COMPLETE` escape hatch.
+2. Invoke the agent in non-interactive mode with its structured-output flag (`claude --output-format stream-json` / `codex exec --json`). Each line is parsed into a normalised `AgentEvent` (Message / ToolStart / ToolEnd / Usage / Stop / Other), formatted onto the terminal, and persisted both as a human-readable line in `log.ndjson` and as a raw JSON event in `events.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
+3. If the agent emitted a diff, generate a Conventional Commits message via a one-shot agent call and commit.
+4. If the agent failed, `git reset --hard` and retry with exponential backoff.
+5. If the agent emits the literal sentinel token (`NATURAL_STOP` for `cont`, `TASK_COMPLETE` for `iter`), exit cleanly.
+
+Single branch, single PR, many commits — by design (`cont` mode). One branch + PR per task (`iter` mode).
 
 ## State layout
 
@@ -176,40 +212,21 @@ appended under a timestamped header. The next iteration reads the
 file back into the prompt as cross-iteration memory. Empty / `NO_NOTES`
 outputs are skipped.
 
-### Resuming
-
-```sh
-# interactive picker — shows the 10 most recent runs
-kobito resume
-
-# or resume a specific run id (the timestamp dir name)
-kobito resume --run 2026-05-01T12-00-00
-```
-
-`kobito resume` without `--run` opens an arrow-key picker listing the most
-recent runs (id, branch, first line of the goal). When there is only one
-prior run, or when stdin is not a TTY (CI, pipes), it auto-picks the
-latest.
-
-Resume re-uses the original branch and agent from the run's
-`meta.json`, opens a new run directory, and copies the previous
-`notes.md` as the starting memory so the loop picks up with what
-the earlier iterations learned.
-
 `$XDG_STATE_HOME` is honoured if set.
 
-## How it works
+## Related Projects
 
-Each iteration:
+- [**gitlogue**](https://github.com/unhappychoice/gitlogue) — A cinematic Git commit replay tool for the terminal
+- [**GitType**](https://github.com/unhappychoice/gittype) — A CLI code-typing game that turns your source code into typing challenges
 
-1. Build a prompt: cross-iteration notes (if any) + the goal + a `NATURAL_STOP` / `TASK_COMPLETE` escape hatch.
-2. Invoke the agent in non-interactive mode with its structured-output flag (`claude --output-format stream-json` / `codex exec --json`). Each line is parsed into a normalised `AgentEvent` (Message / ToolStart / ToolEnd / Usage / Stop / Other), formatted onto the terminal, and persisted both as a human-readable line in `log.ndjson` and as a raw JSON event in `events.ndjson`. The agent loads its own `CLAUDE.md` / `AGENTS.md` at this point.
-3. If the agent emitted a diff, generate a Conventional Commits message via a one-shot agent call and commit.
-4. If the agent failed, `git reset --hard` and retry with exponential backoff.
-5. If the agent emits the literal sentinel token (`NATURAL_STOP` for `cont`, `TASK_COMPLETE` for `iter`), exit cleanly.
+## Contributing
 
-Single branch, single PR, many commits — by design (`cont` mode). One branch + PR per task (`iter` mode).
+Contributions are welcome. See [AGENTS.md](AGENTS.md) for project conventions.
 
 ## License
 
-ISC
+ISC License. See [LICENSE](LICENSE) for details.
+
+## Author
+
+[@unhappychoice](https://github.com/unhappychoice)
