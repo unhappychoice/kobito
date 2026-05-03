@@ -1198,6 +1198,63 @@ esac
     }
 
     #[tokio::test]
+    async fn run_continuous_rejects_vars_without_preset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let (_dir, run, _sink) = temp_run("continuous-var-without-preset");
+        let repo = temp_repo(&run);
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec!["area=runner".to_string()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--var requires --preset")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_continuous_rejects_dirty_worktree_by_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let (_dir, run, _sink) = temp_run("continuous-dirty");
+        let repo = temp_repo(&run);
+        fs::write(repo.join("README.md"), "dirty\n").unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: Some("increase coverage".to_string()),
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("working tree is dirty")
+        );
+    }
+
+    #[tokio::test]
     async fn run_continuous_records_no_remote_run_and_stops_naturally() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_dir = std::env::current_dir().unwrap();
