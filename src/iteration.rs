@@ -268,6 +268,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_rejects_vars_without_preset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let dir = unique_tmp("var-without-preset");
+        let repo = dir.0.join("repo");
+
+        init_repo(&repo);
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: None,
+            preset: None,
+            vars: vec!["topic=coverage".into()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+
+        assert_eq!(result.unwrap_err().to_string(), "--var requires --preset");
+    }
+
+    #[tokio::test]
+    async fn run_seeds_empty_tasks_and_exits_when_none_are_pending() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("no-pending");
+        let repo = dir.0.join("repo");
+        let state_home = dir.0.join("state");
+
+        init_repo(&repo);
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: None,
+            preset: None,
+            vars: vec![],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state::tasks_path(&project)).unwrap(),
+            ""
+        );
+        assert_eq!(
+            std::fs::read_dir(project.root.join("runs"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn run_processes_pending_task_without_completion() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old_dir = std::env::current_dir().unwrap();
