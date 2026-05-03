@@ -1110,6 +1110,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_iterations_skips_commit_when_agent_produces_no_diff() {
+        let (_dir, run, sink) = temp_run("no-diff");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "exit 99",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 2,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        let commit_count = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(String::from_utf8(commit_count.stdout).unwrap().trim(), "1");
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(run.prompts_dir.join("iter-0002.md").exists());
+        assert!(!state::notes_path(&run).exists());
+    }
+
+    #[tokio::test]
     async fn run_iterations_resets_worktree_after_agent_failure() {
         let (_dir, run, sink) = temp_run("agent-failure");
         let repo = temp_repo(&run);
