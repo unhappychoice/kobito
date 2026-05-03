@@ -1260,6 +1260,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_iterations_keeps_commit_when_notes_update_fails() {
+        let (_dir, run, sink) = temp_run("notes-update-fails");
+        let repo = temp_repo(&run);
+        fs::create_dir_all(state::notes_path(&run)).unwrap();
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'generated\n' > generated.txt; printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "printf 'test(runner): keep commit without notes\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 1,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "test(runner): keep commit without notes"
+        );
+        assert!(
+            fs::read_to_string(&run.log_file)
+                .unwrap()
+                .contains("notes update failed")
+        );
+    }
+
+    #[tokio::test]
     async fn run_iterations_skips_commit_when_agent_produces_no_diff() {
         let (_dir, run, sink) = temp_run("no-diff");
         let repo = temp_repo(&run);
