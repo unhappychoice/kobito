@@ -1473,6 +1473,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_finalize_round_stops_when_diff_fails() {
+        let (_dir, run, sink) = temp_run("finalize-diff-fails");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_when_agent_fails() {
+        let (_dir, run, sink) = temp_run("finalize-agent-fails");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 7",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_without_final_message() {
+        let (_dir, run, sink) = temp_run("finalize-no-final-message");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "true",
+            oneshot_script: "exit 99",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_finalize_round_stops_when_commit_message_fails() {
+        let (_dir, run, sink) = temp_run("finalize-commit-message-fails");
+        let repo = temp_repo(&run);
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'fixed\n' > README.md; printf '{"ready_for_review":false,"summary":"fixed"}\n'"#,
+            oneshot_script: "exit 7",
+        };
+
+        let outcome = run_finalize_round(
+            &agent,
+            &repo,
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            1,
+        )
+        .await;
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
     async fn run_finalize_round_commits_agent_fixes_with_finalize_prefix() {
         let (_dir, run, sink) = temp_run("finalize-commit-fixes");
         let repo = temp_repo(&run);
