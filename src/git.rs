@@ -315,6 +315,59 @@ mod tests {
     }
 
     #[test]
+    fn default_remote_branch_falls_back_to_main_without_origin_head() {
+        let repo = init_repo("default-branch-fallback");
+
+        assert_eq!(default_remote_branch(&repo), "main");
+    }
+
+    #[test]
+    fn default_remote_branch_reads_origin_head() {
+        let repo = init_repo("default-branch-origin-head");
+        empty_commit(&repo, "init");
+        run(&repo, &["checkout", "-b", "trunk"]).unwrap();
+        run(&repo, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]).unwrap();
+        run(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(default_remote_branch(&repo), "trunk");
+    }
+
+    #[test]
+    fn diff_against_returns_diff_from_base_to_head() {
+        let repo = init_repo("diff-against");
+        write_file(&repo, "a.txt", "v1\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "init a").unwrap();
+        create_and_checkout(&repo, "feature/change-a").unwrap();
+        write_file(&repo, "a.txt", "v2\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "change a").unwrap();
+
+        let diff = diff_against(&repo, "main").unwrap();
+
+        assert!(diff.contains("-v1"), "expected diff to remove v1, got: {diff}");
+        assert!(diff.contains("+v2"), "expected diff to add v2, got: {diff}");
+    }
+
+    #[test]
+    fn diff_against_reports_git_stderr_for_unknown_base() {
+        let repo = init_repo("diff-against-missing-base");
+        empty_commit(&repo, "init");
+
+        let err = diff_against(&repo, "missing-base").unwrap_err().to_string();
+
+        assert!(err.contains("git diff missing-base...HEAD failed"), "got: {err}");
+    }
+
+    #[test]
     fn run_returns_error_with_stderr_when_git_fails() {
         let repo = init_repo("run-fail");
         let err = run(&repo, &["checkout", "does-not-exist"])
