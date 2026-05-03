@@ -1081,6 +1081,17 @@ esac
         }
     }
 
+    fn single_run_dir(state_home: &Path) -> PathBuf {
+        fs::read_dir(state_home.join("kobito/projects"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .flat_map(|entry| fs::read_dir(entry.path().join("runs")).unwrap())
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .next()
+            .unwrap()
+    }
+
     fn tracker_for(run: &state::RunPaths) -> PrTracker<'_> {
         PrTracker::new(
             "main".to_string(),
@@ -1240,6 +1251,55 @@ esac
         assert!(log.contains("agent reported natural_stop"));
         assert!(run_dir.join("prompts/iter-0001.md").exists());
         assert!(!run_dir.join("prompts/iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_continuous_loads_preset_goal() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("continuous-preset");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+
+        fs::create_dir_all(repo.join(".kobito/presets")).unwrap();
+        fs::write(
+            repo.join(".kobito/presets/coverage.md"),
+            "cover {{area}} carefully",
+        )
+        .unwrap();
+        git_cmd(&repo, &["add", ".kobito/presets/coverage.md"]);
+        git_cmd(&repo, &["commit", "-m", "test: add preset"]);
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "feature/preset");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run_continuous(ContinuousArgs {
+            prompt: None,
+            preset: Some("coverage".to_string()),
+            vars: vec!["area=src/runner.rs".to_string()],
+            max_iterations: 1,
+            max_failures: 1,
+            agent: "codex".to_string(),
+            allow_dirty: false,
+        })
+        .await;
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        let prompt =
+            fs::read_to_string(single_run_dir(&state_home).join("prompts/iter-0001.md")).unwrap();
+        assert!(prompt.contains("cover src/runner.rs carefully"));
     }
 
     #[tokio::test]
