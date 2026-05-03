@@ -1,16 +1,19 @@
 # kobito
 
-[![CI](https://github.com/unhappychoice/kobito/actions/workflows/ci.yml/badge.svg)](https://github.com/unhappychoice/kobito/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/kobito.svg)](https://crates.io/crates/kobito)
-[![Downloads](https://img.shields.io/crates/d/kobito.svg)](https://crates.io/crates/kobito)
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/unhappychoice/kobito.svg)](https://github.com/unhappychoice/kobito/releases)
-
 <p align="center">
-  <img src="docs/assets/image.png" alt="kobito" style="max-width: 100%; width: 800px;" />
+  <img src="docs/assets/image.png" alt="kobito" width="820">
 </p>
 
-> Like the elves in the shoemaker's tale, it works while you sleep.
+<p align="center">
+  <a href="https://crates.io/crates/kobito"><img src="https://img.shields.io/crates/v/kobito.svg?style=flat-square&color=E06B4B" alt="crates.io"></a>
+  <a href="https://github.com/unhappychoice/kobito/releases"><img src="https://img.shields.io/github/v/release/unhappychoice/kobito?style=flat-square&color=E0C14B&label=release" alt="release"></a>
+  <a href="https://github.com/unhappychoice/kobito/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/unhappychoice/kobito/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/unhappychoice/kobito/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/kobito.svg?style=flat-square" alt="license"></a>
+</p>
+
+<p align="center">
+  <strong>Like the elves in the shoemaker's tale, it works while you sleep.</strong>
+</p>
 
 `kobito` is an autonomous coding agent orchestrator. Give it a goal, it
 loops — invoking [Claude Code](https://github.com/anthropics/claude-code)
