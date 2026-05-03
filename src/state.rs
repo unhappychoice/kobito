@@ -194,6 +194,8 @@ pub fn list_projects() -> Result<()> {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn unique_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "kobito-state-{label}-{}-{}",
@@ -202,6 +204,18 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn with_xdg_state_home<T>(root: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XDG_STATE_HOME");
+        unsafe { std::env::set_var("XDG_STATE_HOME", root) };
+        let result = f();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_STATE_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
+        }
+        result
     }
 
     fn project_with_root(root: PathBuf, id: &str) -> ProjectPaths {
@@ -256,6 +270,24 @@ mod tests {
     fn project_id_uses_default_basename_when_path_has_none() {
         let id = project_id(Path::new("/"), Some("remote"));
         assert!(id.starts_with("project-"));
+    }
+
+    #[test]
+    fn state_root_uses_non_empty_xdg_state_home() {
+        let dir = unique_dir("xdg-root");
+        let root = with_xdg_state_home(&dir, state_root);
+        assert_eq!(root, dir.join("kobito"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn project_paths_creates_project_runs_dir_under_state_root() {
+        let dir = unique_dir("project-paths");
+        let project = with_xdg_state_home(&dir, || project_paths("p-9".to_string()).unwrap());
+        assert_eq!(project.id, "p-9");
+        assert_eq!(project.root, dir.join("kobito/projects/p-9"));
+        assert!(project.root.join("runs").is_dir());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -397,5 +429,13 @@ mod tests {
         assert_eq!(fs::read_to_string(&dest).unwrap(), "existing\n");
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn list_projects_accepts_empty_state_root() {
+        let dir = unique_dir("list-empty");
+        let result = with_xdg_state_home(&dir, list_projects);
+        assert!(result.is_ok());
+        fs::remove_dir_all(&dir).ok();
     }
 }
