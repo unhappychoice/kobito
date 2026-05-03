@@ -1178,6 +1178,46 @@ mod tests {
         assert!(!run.prompts_dir.join("iter-0002.md").exists());
     }
 
+    #[tokio::test]
+    async fn run_iterations_leaves_worktree_when_cancelled_during_agent_failure() {
+        let (_dir, run, sink) = temp_run("cancelled-agent-failure");
+        let repo = temp_repo(&run);
+        let cancelled = flag(false);
+        let agent = StreamingFakeAgent {
+            script: "printf 'changed\n' > README.md; sleep 0.4; exit 7",
+            oneshot_script: "true",
+        };
+        let cancel_task = {
+            let cancelled = cancelled.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                cancelled.store(true, Ordering::SeqCst);
+            })
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 3,
+            max_failures: 1,
+            sink: &sink,
+            cancelled,
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+        cancel_task.await.unwrap();
+
+        assert_eq!(completed, 0);
+        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "changed\n");
+        assert!(run.prompts_dir.join("iter-0001.md").exists());
+        assert!(!run.prompts_dir.join("iter-0002.md").exists());
+    }
+
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
         assert_eq!(truncate_for_finalize("short"), "short");
