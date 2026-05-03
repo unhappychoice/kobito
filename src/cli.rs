@@ -164,6 +164,9 @@ fn edit_tasks() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn cont_accepts_prompt_and_defaults() {
@@ -291,5 +294,59 @@ mod tests {
         let err = dispatch(cli).await.unwrap_err();
 
         assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_tasks_edit_reports_editor_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        let repo = temp_repo("kobito-cli-tasks-edit");
+        let state = temp_dir("kobito-cli-state");
+        let editor = std::env::var("EDITOR").ok();
+        let visual = std::env::var("VISUAL").ok();
+        let xdg_state_home = std::env::var("XDG_STATE_HOME").ok();
+
+        std::env::set_current_dir(&repo).unwrap();
+        set_env("EDITOR", Some("false"));
+        set_env("VISUAL", None);
+        set_env("XDG_STATE_HOME", Some(state.to_str().unwrap()));
+
+        let cli = Cli::parse_from(["kobito", "tasks", "edit"]);
+        let err = dispatch(cli).await.unwrap_err();
+
+        set_env("EDITOR", editor.as_deref());
+        set_env("VISUAL", visual.as_deref());
+        set_env("XDG_STATE_HOME", xdg_state_home.as_deref());
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(err.to_string().contains("editor exited"));
+    }
+
+    fn temp_repo(prefix: &str) -> PathBuf {
+        let dir = temp_dir(prefix);
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        dir
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn set_env(key: &str, value: Option<&str>) {
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 }
