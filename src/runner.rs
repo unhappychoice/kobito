@@ -1048,6 +1048,62 @@ mod tests {
         )
     }
 
+    fn resume_project(root: &Path) -> state::ProjectPaths {
+        let project = state::ProjectPaths {
+            id: "test-project".to_string(),
+            root: root.join("project"),
+        };
+        fs::create_dir_all(project.root.join("runs")).unwrap();
+        project
+    }
+
+    fn write_resume_run(project: &state::ProjectPaths, run_id: &str, goal: &str) {
+        let run_dir = project.root.join("runs").join(run_id);
+        let run = state::RunPaths {
+            project: project.clone(),
+            run_dir: run_dir.clone(),
+            log_file: run_dir.join("log.ndjson"),
+            prompts_dir: run_dir.join("prompts"),
+            timestamp: run_id.to_string(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        state::write_run_meta(
+            &run,
+            &state::RunMeta {
+                run_id: run_id.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "feature/test".to_string(),
+                goal: goal.to_string(),
+                agent: "fake".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pick_run_to_resume_errors_when_project_has_no_runs() {
+        let (_dir, run, _sink) = temp_run("resume-empty");
+        let project = resume_project(run.run_dir.parent().unwrap());
+
+        let err = pick_run_to_resume(&project).unwrap_err();
+
+        assert!(err.to_string().contains("no previous runs to resume"));
+    }
+
+    #[test]
+    fn pick_run_to_resume_returns_latest_run_without_terminal() {
+        let (_dir, run, _sink) = temp_run("resume-latest");
+        let project = resume_project(run.run_dir.parent().unwrap());
+        write_resume_run(&project, "2026-05-01T00-00-00", "older goal");
+        write_resume_run(&project, "2026-05-02T00-00-00", "newer goal");
+
+        let selected = pick_run_to_resume(&project).unwrap();
+
+        assert_eq!(selected, "2026-05-02T00-00-00");
+    }
+
     #[test]
     fn pr_tracker_marks_create_failed_when_initial_push_fails() {
         let (_dir, run, sink) = temp_run("pr-tracker-push-failure");
