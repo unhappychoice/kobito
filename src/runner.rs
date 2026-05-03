@@ -1615,6 +1615,56 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn finalize_run_skips_when_no_pr_url_is_recorded() {
+        let (_dir, run, sink) = temp_run("finalize-no-pr-url");
+        let mut tracker = draft_tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        finalize_run(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("finalize: no PR URL recorded; skipping"));
+    }
+
+    #[tokio::test]
+    async fn finalize_run_declines_when_stdin_is_not_terminal() {
+        let (_dir, run, sink) = temp_run("finalize-declined");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        finalize_run(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("finalize: declined; PR left in draft"));
+    }
+
     #[test]
     fn truncate_for_finalize_passes_short_input_through() {
         assert_eq!(truncate_for_finalize("short"), "short");
