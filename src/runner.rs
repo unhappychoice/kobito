@@ -1151,6 +1151,19 @@ esac
         .unwrap();
     }
 
+    fn write_resume_meta(project: &state::ProjectPaths, meta: state::RunMeta) {
+        let run_dir = project.root.join("runs").join(&meta.run_id);
+        let run = state::RunPaths {
+            project: project.clone(),
+            run_dir: run_dir.clone(),
+            log_file: run_dir.join("log.ndjson"),
+            prompts_dir: run_dir.join("prompts"),
+            timestamp: meta.run_id.clone(),
+        };
+        fs::create_dir_all(&run.prompts_dir).unwrap();
+        state::write_run_meta(&run, &meta).unwrap();
+    }
+
     #[test]
     fn pick_run_to_resume_errors_when_project_has_no_runs() {
         let (_dir, run, _sink) = temp_run("resume-empty");
@@ -1227,6 +1240,82 @@ esac
         assert!(log.contains("agent reported natural_stop"));
         assert!(run_dir.join("prompts/iter-0001.md").exists());
         assert!(!run_dir.join("prompts/iter-0002.md").exists());
+    }
+
+    #[tokio::test]
+    async fn resume_continuous_copies_notes_and_stops_naturally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let (_dir, run, _sink) = temp_run("resume-natural-stop");
+        let repo = temp_repo(&run);
+        let bin = run.run_dir.parent().unwrap().join("bin");
+        let state_home = run.run_dir.parent().unwrap().join("state");
+        let previous_run = "2026-05-01T00-00-00";
+
+        fs::create_dir_all(&bin).unwrap();
+        write_natural_stop_codex(&bin, "unused");
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        let repo_root = fs::canonicalize(&repo).unwrap();
+        let project = state::project_paths(state::project_id(&repo_root, None)).unwrap();
+        write_resume_meta(
+            &project,
+            state::RunMeta {
+                run_id: previous_run.to_string(),
+                started_at: "2026-05-01T00:00:00Z".to_string(),
+                branch: "main".to_string(),
+                goal: "resume coverage work".to_string(),
+                agent: "codex".to_string(),
+                pr_url: None,
+                base_branch: Some("main".to_string()),
+            },
+        );
+        fs::write(
+            project
+                .root
+                .join("runs")
+                .join(previous_run)
+                .join("notes.md"),
+            "## iteration 1\n\n- keep this learning\n",
+        )
+        .unwrap();
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = resume_continuous(ResumeArgs {
+            run: Some(previous_run.to_string()),
+            max_iterations: 2,
+            max_failures: 1,
+            allow_dirty: false,
+        })
+        .await;
+        let branch = git::current_branch(&repo).unwrap();
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(branch, "main");
+        let resumed = fs::read_dir(project.root.join("runs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap() != previous_run)
+            .unwrap();
+        let log = fs::read_to_string(resumed.join("log.ndjson")).unwrap();
+        assert!(log.contains("kobito resume from 2026-05-01T00-00-00"));
+        assert!(log.contains("no git remote configured"));
+        assert!(log.contains("agent reported natural_stop"));
+        assert!(resumed.join("prompts/iter-0001.md").exists());
+        assert_eq!(
+            fs::read_to_string(resumed.join("notes.md")).unwrap(),
+            "## iteration 1\n\n- keep this learning\n"
+        );
     }
 
     #[test]
