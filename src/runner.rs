@@ -932,6 +932,7 @@ mod tests {
 
     struct StreamingFakeAgent {
         script: &'static str,
+        oneshot_script: &'static str,
     }
 
     impl Agent for StreamingFakeAgent {
@@ -946,7 +947,9 @@ mod tests {
         }
 
         fn build_oneshot_command(&self, _: &str) -> Command {
-            Command::new("true")
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.oneshot_script);
+            cmd
         }
 
         fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
@@ -987,11 +990,34 @@ mod tests {
         Arc::new(AtomicBool::new(value))
     }
 
+    fn temp_repo(run: &state::RunPaths) -> PathBuf {
+        let repo = run.run_dir.parent().unwrap().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git_cmd(&repo, &["init", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.email", "kobito@example.test"]);
+        git_cmd(&repo, &["config", "user.name", "kobito"]);
+        git_cmd(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("README.md"), "start\n").unwrap();
+        git_cmd(&repo, &["add", "-A"]);
+        git_cmd(&repo, &["commit", "-m", "chore: initial"]);
+        repo
+    }
+
+    fn git_cmd(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
     #[tokio::test]
     async fn run_iterations_stops_when_agent_reports_natural_stop() {
         let (_dir, run, sink) = temp_run("natural-stop");
         let agent = StreamingFakeAgent {
             script: r#"printf '{"natural_stop":true}\n'"#,
+            oneshot_script: "true",
         };
 
         let completed = run_iterations(LoopArgs {
@@ -1018,7 +1044,10 @@ mod tests {
     #[tokio::test]
     async fn run_iterations_exits_before_prompt_when_finalize_requested() {
         let (_dir, run, sink) = temp_run("finalize-requested");
-        let agent = StreamingFakeAgent { script: "exit 99" };
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "true",
+        };
 
         let completed = run_iterations(LoopArgs {
             agent: &agent,
@@ -1038,6 +1067,46 @@ mod tests {
 
         assert_eq!(completed, 0);
         assert!(!run.prompts_dir.join("iter-0001.md").exists());
+    }
+
+    #[tokio::test]
+    async fn run_iterations_commits_agent_changes() {
+        let (_dir, run, sink) = temp_run("commit-changes");
+        let repo = temp_repo(&run);
+        let agent = StreamingFakeAgent {
+            script: r#"printf 'generated\n' > generated.txt; printf '{"natural_stop":false}\n'"#,
+            oneshot_script: "printf 'increase coverage\n'",
+        };
+
+        let completed = run_iterations(LoopArgs {
+            agent: &agent,
+            repo: &repo,
+            run: &run,
+            branch: "feature/test",
+            goal: "increase coverage",
+            max_iterations: 1,
+            max_failures: 1,
+            sink: &sink,
+            cancelled: flag(false),
+            finalize_requested: flag(false),
+            pr_tracker: None,
+        })
+        .await
+        .unwrap();
+
+        let commit_subject = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert!(repo.join("generated.txt").exists());
+        assert_eq!(
+            String::from_utf8(commit_subject.stdout).unwrap().trim(),
+            "increase coverage"
+        );
+        assert!(state::notes_path(&run).exists());
     }
 
     #[test]
