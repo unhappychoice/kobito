@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-07
+
+### ✨ Features
+
+- feat(prompt): forbid agent from driving git or PR lifecycle ([a8b3526](https://github.com/unhappychoice/kobito/commit/a8b3526))
+
+### 🐛 Bug Fixes
+
+- fix(prompt): stop iter from looping on already-completed tasks ([60a3e2f](https://github.com/unhappychoice/kobito/commit/60a3e2f))
+
+### 📝 Other Changes
+
+- chore: bump version to v0.3.1 ([b6e1e64](https://github.com/unhappychoice/kobito/commit/b6e1e64))
+
+
 ## [0.3.0] - 2026-05-07
 
 ### ✨ Features
@@ -17,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📝 Other Changes
 
-- chore: bump version to v0.3.0 ([5bbf3fc](https://github.com/unhappychoice/kobito/commit/5bbf3fc))
+- chore: bump version to v0.3.0 ([b1787bb](https://github.com/unhappychoice/kobito/commit/b1787bb))
 - test(state): make XDG_STATE_HOME swap panic-safe ([a4bde88](https://github.com/unhappychoice/kobito/commit/a4bde88))
 - test(iteration): cover agent failure cleanup path ([ab3f0d4](https://github.com/unhappychoice/kobito/commit/ab3f0d4))
 - test(iteration): cover branch creation failure path ([f715b02](https://github.com/unhappychoice/kobito/commit/f715b02))
