@@ -22,6 +22,22 @@ Each invocation of you is one iteration:
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
 
+## What kobito owns — do not do these yourself
+
+kobito owns the entire git and GitHub lifecycle for this run. **You must not** \
+run any of the following, even if a project skill or memory file suggests \
+otherwise; if you do, kobito's bookkeeping breaks:
+
+- `git commit`, `git add` (kobito stages and commits your diff for you)
+- `git push`, `git pull`, `git fetch`, branch creation/deletion, force-push
+- `gh pr create`, `gh pr edit`, `gh pr merge`, `gh pr review`, `gh pr close`, \
+  `gh pr ready`
+- Any equivalent invocation via API, MCP, scripts, or alternative CLIs
+
+Just edit files in the working tree and exit. The orchestrator commits, \
+pushes, opens the draft PR, runs the finalize phase, and decides if and when \
+to mark the PR ready for review. Merging is a human's decision; never merge.
+
 ## How to stop
 
 Your **final message** in this iteration MUST be a single JSON object — nothing else, no prose, no code fence, no commentary:
@@ -53,6 +69,22 @@ Each invocation of you is one iteration of this task's loop:
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
 
+## What kobito owns — do not do these yourself
+
+kobito owns the entire git and GitHub lifecycle for this task. **You must not** \
+run any of the following, even if a project skill or memory file suggests \
+otherwise; if you do, kobito's bookkeeping breaks:
+
+- `git commit`, `git add` (kobito stages and commits your diff for you)
+- `git push`, `git pull`, `git fetch`, branch creation/deletion, force-push
+- `gh pr create`, `gh pr edit`, `gh pr merge`, `gh pr review`, `gh pr close`, \
+  `gh pr ready`
+- Any equivalent invocation via API, MCP, scripts, or alternative CLIs
+
+Just edit files in the working tree and exit. The orchestrator commits, \
+pushes, opens the draft PR, and decides if and when to mark the PR ready for \
+review. Merging is a human's decision; never merge.
+
 ## How to stop
 
 Your **final message** in this iteration MUST be a single JSON object — nothing else, no prose, no code fence, no commentary:
@@ -61,9 +93,9 @@ Your **final message** in this iteration MUST be a single JSON object — nothin
 {\"task_complete\": <bool>, \"summary\": \"<one-line summary of what you did this iteration>\"}
 ```
 
-- Set `task_complete` to `true` when the task is fully done. The orchestrator will move on to the next task.
-- Set `task_complete` to `false` after making a small focused change so the diff can be committed and the next iteration can run.
-- The JSON is the *only* signal the orchestrator looks at. Discussing or quoting `task_complete` in earlier messages is fine — only this final JSON is parsed.
+- Set `task_complete` to `true` whenever the task is already done — including when previous iterations finished it before this one started. If `git log` on this branch and the cross-iteration notes show the work has landed and there is no further focused change for you to make, return `true` immediately. Do not spend an iteration re-verifying completed work; that is what is currently failing this run.
+- Set `task_complete` to `false` only when you produced (or are about to produce) a focused change that the orchestrator should commit, with more work still pending for the next iteration.
+- The JSON is the *only* signal the orchestrator looks at. Discussing or quoting `task_complete` in earlier messages — including legacy uppercase sentinels like `TASK_COMPLETE` — has no effect. Only this final JSON is parsed.
 
 ";
 
@@ -119,7 +151,7 @@ pub fn build_task_prompt(parts: &PromptParts, task_body: &str) -> String {
     ));
 
     out.push_str(
-        "Make focused progress toward completing only this single task. Stop when one logical change is complete so the diff can be committed.\n",
+        "First, check `git log` on this branch and the notes above to decide whether this task was already finished by a previous iteration. If it was, your only job is to return `task_complete: true` — do not produce a diff or run verification commands. Otherwise, make one focused change toward completing the task and return `task_complete: false` so the orchestrator can commit it and run the next iteration.\n",
     );
 
     out
@@ -305,11 +337,88 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_ends_with_focus_directive() {
+    fn task_prompt_ends_with_completion_check_directive() {
         let out = build_task_prompt(&parts("g", 1), "task");
-        assert!(out.trim_end().ends_with(
-            "Make focused progress toward completing only this single task. Stop when one logical change is complete so the diff can be committed."
-        ));
+        let trimmed = out.trim_end();
+        assert!(
+            trimmed.ends_with(
+                "Otherwise, make one focused change toward completing the task and return `task_complete: false` so the orchestrator can commit it and run the next iteration."
+            ),
+            "prompt should end with the completion-check directive: {trimmed}",
+        );
+        assert!(
+            trimmed.contains("`task_complete: true`"),
+            "directive should tell the agent how to short-circuit when the task is already done: {trimmed}",
+        );
+    }
+
+    #[test]
+    fn iteration_prompt_forbids_agent_from_driving_git_or_pr_lifecycle() {
+        let out = build_iteration_prompt(&parts("g", 1));
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("kobito owns"),
+            "cont prompt should claim ownership of git/PR lifecycle: {out}",
+        );
+        for forbidden in [
+            "`git commit`",
+            "`git push`",
+            "`gh pr create`",
+            "`gh pr merge`",
+        ] {
+            assert!(
+                out.contains(forbidden),
+                "cont prompt should forbid {forbidden}: {out}",
+            );
+        }
+        assert!(
+            lower.contains("never merge"),
+            "cont prompt should explicitly forbid merging: {out}",
+        );
+    }
+
+    #[test]
+    fn task_prompt_forbids_agent_from_driving_git_or_pr_lifecycle() {
+        let out = build_task_prompt(&parts("g", 1), "task");
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("kobito owns"),
+            "iter prompt should claim ownership of git/PR lifecycle: {out}",
+        );
+        for forbidden in [
+            "`git commit`",
+            "`git push`",
+            "`gh pr create`",
+            "`gh pr merge`",
+        ] {
+            assert!(
+                out.contains(forbidden),
+                "iter prompt should forbid {forbidden}: {out}",
+            );
+        }
+        assert!(
+            lower.contains("never merge"),
+            "iter prompt should explicitly forbid merging: {out}",
+        );
+    }
+
+    #[test]
+    fn task_prompt_tells_agent_to_short_circuit_when_prior_iterations_finished_the_task() {
+        // Regression: the previous prompt told the agent to "Set
+        // task_complete to false after making a small focused change",
+        // which biased it toward grinding verification iterations after
+        // the task was already done. The new prompt must explicitly
+        // cover the already-done case so iter does not waste budget.
+        let out = build_task_prompt(&parts("g", 1), "task");
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("previous iterations"),
+            "prompt should reference prior iteration completion: {out}",
+        );
+        assert!(
+            lower.contains("do not spend an iteration re-verifying"),
+            "prompt should forbid the verify-loop pattern: {out}",
+        );
     }
 
     #[test]
