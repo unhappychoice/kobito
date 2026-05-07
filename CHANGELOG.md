@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-07
+
+### ✨ Features
+
+- feat(runner): auto-finalize PR when iteration loop completes naturally ([1575185](https://github.com/unhappychoice/kobito/commit/1575185))
+
+### 🐛 Bug Fixes
+
+- fix(test): switch ENV_LOCK to tokio Mutex ([eb9384f](https://github.com/unhappychoice/kobito/commit/eb9384f))
+
+### 📝 Other Changes
+
+- chore: bump version to v0.3.0 ([5bbf3fc](https://github.com/unhappychoice/kobito/commit/5bbf3fc))
+- test(state): make XDG_STATE_HOME swap panic-safe ([a4bde88](https://github.com/unhappychoice/kobito/commit/a4bde88))
+- test(iteration): cover agent failure cleanup path ([ab3f0d4](https://github.com/unhappychoice/kobito/commit/ab3f0d4))
+- test(iteration): cover branch creation failure path ([f715b02](https://github.com/unhappychoice/kobito/commit/f715b02))
+- test(iteration): cover completed task PR failure path ([f288ad1](https://github.com/unhappychoice/kobito/commit/f288ad1))
+- test(runner): cover PR metadata persist failure ([897ae6d](https://github.com/unhappychoice/kobito/commit/897ae6d))
+- test(runner): cover PR metadata edit paths ([05c89eb](https://github.com/unhappychoice/kobito/commit/05c89eb))
+- test(runner): cover finalize helper paths ([2746431](https://github.com/unhappychoice/kobito/commit/2746431))
+- test(state): cover populated project listing path ([2eeef87](https://github.com/unhappychoice/kobito/commit/2eeef87))
+- test(runner): cover resume existing PR path ([f13e84b](https://github.com/unhappychoice/kobito/commit/f13e84b))
+- test(iteration): cover preset task prompt path ([c33123e](https://github.com/unhappychoice/kobito/commit/c33123e))
+- test(runner): cover remote draft PR path ([9270a4f](https://github.com/unhappychoice/kobito/commit/9270a4f))
+- test(iteration): cover preset var guard paths ([aa2fa37](https://github.com/unhappychoice/kobito/commit/aa2fa37))
+- test(runner): cover continuous guard paths ([94a30b7](https://github.com/unhappychoice/kobito/commit/94a30b7))
+- test(runner): cover continuous preset goal ([d019219](https://github.com/unhappychoice/kobito/commit/d019219))
+- test(runner): cover resume natural stop path ([59a0f05](https://github.com/unhappychoice/kobito/commit/59a0f05))
+- test(runner): cover natural stop path ([1e51274](https://github.com/unhappychoice/kobito/commit/1e51274))
+- test(runner): cover draft PR create success path ([5f49696](https://github.com/unhappychoice/kobito/commit/5f49696))
+- test(runner): cover notes update failure path ([dabd111](https://github.com/unhappychoice/kobito/commit/dabd111))
+- test(iteration): cover completed task path ([207e093](https://github.com/unhappychoice/kobito/commit/207e093))
+- test(runner): cover finalize skip paths ([d4d5f28](https://github.com/unhappychoice/kobito/commit/d4d5f28))
+- test(runner): cover finalize round failure paths ([13ba49f](https://github.com/unhappychoice/kobito/commit/13ba49f))
+- test(runner): cover draft PR create failure path ([b201c85](https://github.com/unhappychoice/kobito/commit/b201c85))
+- test(runner): cover resume run selection paths ([a3c9cb9](https://github.com/unhappychoice/kobito/commit/a3c9cb9))
+- test(runner): cover pr create push failure ([32343f1](https://github.com/unhappychoice/kobito/commit/32343f1))
+- test(runner): cover pr metadata paths ([f01a468](https://github.com/unhappychoice/kobito/commit/f01a468))
+- test(iteration): cover fallback branch path ([22a12b6](https://github.com/unhappychoice/kobito/commit/22a12b6))
+- test(iteration): cover pending task run path ([e151d7e](https://github.com/unhappychoice/kobito/commit/e151d7e))
+- test(cli): cover tasks edit dispatch failure ([8150646](https://github.com/unhappychoice/kobito/commit/8150646))
+- test(cli): cover log dispatch path ([8c6f4ab](https://github.com/unhappychoice/kobito/commit/8c6f4ab))
+- test(state): cover state root paths ([6da76af](https://github.com/unhappychoice/kobito/commit/6da76af))
+- test(runner): cover transient agent failure retry paths ([ef62c32](https://github.com/unhappychoice/kobito/commit/ef62c32))
+- test(runner): cover finalize fix commit prefix ([e49724f](https://github.com/unhappychoice/kobito/commit/e49724f))
+- test(runner): cover finalize round paths ([a5b3343](https://github.com/unhappychoice/kobito/commit/a5b3343))
+- test(runner): cover pre-prompt cancellation path ([3e86b69](https://github.com/unhappychoice/kobito/commit/3e86b69))
+- test(runner): cover cancelled agent failure path ([1046915](https://github.com/unhappychoice/kobito/commit/1046915))
+- test(runner): cover no-diff iteration path ([fe12b05](https://github.com/unhappychoice/kobito/commit/fe12b05))
+- test(runner): cover agent failure reset path ([e344c99](https://github.com/unhappychoice/kobito/commit/e344c99))
+- test(runner): cover iteration commit paths ([32b4cb5](https://github.com/unhappychoice/kobito/commit/32b4cb5))
+- test(runner): cover iteration stop paths ([0f0f112](https://github.com/unhappychoice/kobito/commit/0f0f112))
+- test(notes): cover learning append paths ([a88761a](https://github.com/unhappychoice/kobito/commit/a88761a))
+- test(runner): cover PR metadata suggestion paths ([08de302](https://github.com/unhappychoice/kobito/commit/08de302))
+- test(agent): cover streamed event parsing ([0a02e13](https://github.com/unhappychoice/kobito/commit/0a02e13))
+- test(git): cover remote branch and diff helpers ([f428b97](https://github.com/unhappychoice/kobito/commit/f428b97))
+- test(tasks): cover backlog parsing and persistence paths ([1783565](https://github.com/unhappychoice/kobito/commit/1783565))
+- test(commit): cover message generation paths ([985751f](https://github.com/unhappychoice/kobito/commit/985751f))
+- test(pr): cover push and gh failure paths ([a4b9837](https://github.com/unhappychoice/kobito/commit/a4b9837))
+- test(branch): cover branch suggestion paths ([06ad83b](https://github.com/unhappychoice/kobito/commit/06ad83b))
+- test(iteration): cover task branch and PR helpers ([574ae20](https://github.com/unhappychoice/kobito/commit/574ae20))
+- test(runner): cover finalize reply parsing ([bde34f1](https://github.com/unhappychoice/kobito/commit/bde34f1))
+- test(pr): cover edit argument construction ([af950f0](https://github.com/unhappychoice/kobito/commit/af950f0))
+- test(cli): cover command parsing paths ([0c12b6b](https://github.com/unhappychoice/kobito/commit/0c12b6b))
+
+
 ## [0.2.0] - 2026-05-03
 
 ### ✨ Features
@@ -70,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📝 Other Changes
 
-- chore: bump version to v0.2.0 ([153c23d](https://github.com/unhappychoice/kobito/commit/153c23d))
+- chore: bump version to v0.2.0 ([1f2e73c](https://github.com/unhappychoice/kobito/commit/1f2e73c))
 - chore(deps): bump dirs from 5.0.1 to 6.0.0 ([d6210b5](https://github.com/unhappychoice/kobito/commit/d6210b5))
 - chore(deps): bump dialoguer from 0.11.0 to 0.12.0 ([045d2d1](https://github.com/unhappychoice/kobito/commit/045d2d1))
 - chore(deps): bump sha1 from 0.10.6 to 0.11.0 ([01bd812](https://github.com/unhappychoice/kobito/commit/01bd812))
