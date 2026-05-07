@@ -113,6 +113,24 @@ pub fn diff_against(repo: &Path, base: &str) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
+pub fn has_commits_ahead_of(repo: &Path, base: &str) -> Result<bool> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-list", "--count", &format!("{base}..HEAD")])
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "git rev-list {base}..HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let count: u32 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    Ok(count > 0)
+}
+
 pub fn commit(repo: &Path, message: &str) -> Result<()> {
     let out = Command::new("git")
         .current_dir(repo)
@@ -369,6 +387,42 @@ mod tests {
 
         assert!(
             err.contains("git diff missing-base...HEAD failed"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn has_commits_ahead_of_returns_false_when_branch_matches_base() {
+        let repo = init_repo("ahead-equal");
+        empty_commit(&repo, "init");
+        create_and_checkout(&repo, "feature/no-work").unwrap();
+
+        assert!(!has_commits_ahead_of(&repo, "main").unwrap());
+    }
+
+    #[test]
+    fn has_commits_ahead_of_returns_true_when_branch_has_new_commits() {
+        let repo = init_repo("ahead-progress");
+        empty_commit(&repo, "init");
+        create_and_checkout(&repo, "feature/with-work").unwrap();
+        write_file(&repo, "a.txt", "v1\n");
+        stage_all(&repo).unwrap();
+        commit(&repo, "feat: progress").unwrap();
+
+        assert!(has_commits_ahead_of(&repo, "main").unwrap());
+    }
+
+    #[test]
+    fn has_commits_ahead_of_reports_git_stderr_for_unknown_base() {
+        let repo = init_repo("ahead-missing-base");
+        empty_commit(&repo, "init");
+
+        let err = has_commits_ahead_of(&repo, "missing-base")
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("git rev-list missing-base..HEAD failed"),
             "got: {err}"
         );
     }
