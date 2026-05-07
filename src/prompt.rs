@@ -22,6 +22,22 @@ Each invocation of you is one iteration:
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
 
+## What kobito owns — do not do these yourself
+
+kobito owns the entire git and GitHub lifecycle for this run. **You must not** \
+run any of the following, even if a project skill or memory file suggests \
+otherwise; if you do, kobito's bookkeeping breaks:
+
+- `git commit`, `git add` (kobito stages and commits your diff for you)
+- `git push`, `git pull`, `git fetch`, branch creation/deletion, force-push
+- `gh pr create`, `gh pr edit`, `gh pr merge`, `gh pr review`, `gh pr close`, \
+  `gh pr ready`
+- Any equivalent invocation via API, MCP, scripts, or alternative CLIs
+
+Just edit files in the working tree and exit. The orchestrator commits, \
+pushes, opens the draft PR, runs the finalize phase, and decides if and when \
+to mark the PR ready for review. Merging is a human's decision; never merge.
+
 ## How to stop
 
 Your **final message** in this iteration MUST be a single JSON object — nothing else, no prose, no code fence, no commentary:
@@ -52,6 +68,22 @@ Each invocation of you is one iteration of this task's loop:
 - Use `git log` on the current branch to see what previous iterations of *this* task \
   accomplished — your previous self has no in-process memory across iterations.
 - Any learnings you wrote in earlier iterations appear below under \"Cross-iteration notes\".
+
+## What kobito owns — do not do these yourself
+
+kobito owns the entire git and GitHub lifecycle for this task. **You must not** \
+run any of the following, even if a project skill or memory file suggests \
+otherwise; if you do, kobito's bookkeeping breaks:
+
+- `git commit`, `git add` (kobito stages and commits your diff for you)
+- `git push`, `git pull`, `git fetch`, branch creation/deletion, force-push
+- `gh pr create`, `gh pr edit`, `gh pr merge`, `gh pr review`, `gh pr close`, \
+  `gh pr ready`
+- Any equivalent invocation via API, MCP, scripts, or alternative CLIs
+
+Just edit files in the working tree and exit. The orchestrator commits, \
+pushes, opens the draft PR, and decides if and when to mark the PR ready for \
+review. Merging is a human's decision; never merge.
 
 ## How to stop
 
@@ -317,6 +349,56 @@ mod tests {
         assert!(
             trimmed.contains("`task_complete: true`"),
             "directive should tell the agent how to short-circuit when the task is already done: {trimmed}",
+        );
+    }
+
+    #[test]
+    fn iteration_prompt_forbids_agent_from_driving_git_or_pr_lifecycle() {
+        let out = build_iteration_prompt(&parts("g", 1));
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("kobito owns"),
+            "cont prompt should claim ownership of git/PR lifecycle: {out}",
+        );
+        for forbidden in [
+            "`git commit`",
+            "`git push`",
+            "`gh pr create`",
+            "`gh pr merge`",
+        ] {
+            assert!(
+                out.contains(forbidden),
+                "cont prompt should forbid {forbidden}: {out}",
+            );
+        }
+        assert!(
+            lower.contains("never merge"),
+            "cont prompt should explicitly forbid merging: {out}",
+        );
+    }
+
+    #[test]
+    fn task_prompt_forbids_agent_from_driving_git_or_pr_lifecycle() {
+        let out = build_task_prompt(&parts("g", 1), "task");
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("kobito owns"),
+            "iter prompt should claim ownership of git/PR lifecycle: {out}",
+        );
+        for forbidden in [
+            "`git commit`",
+            "`git push`",
+            "`gh pr create`",
+            "`gh pr merge`",
+        ] {
+            assert!(
+                out.contains(forbidden),
+                "iter prompt should forbid {forbidden}: {out}",
+            );
+        }
+        assert!(
+            lower.contains("never merge"),
+            "iter prompt should explicitly forbid merging: {out}",
         );
     }
 
