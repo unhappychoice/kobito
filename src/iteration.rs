@@ -173,8 +173,8 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                         // work, treat the task as complete so the PR can
                         // be opened; otherwise the agent has stalled
                         // before producing anything.
-                        let prior_commits = git::has_commits_ahead_of(&repo, &starting_branch)
-                            .unwrap_or(false);
+                        let prior_commits =
+                            git::has_commits_ahead_of(&repo, &starting_branch).unwrap_or(false);
                         if prior_commits {
                             sink.note(
                                 "no progress this iteration; treating task as complete (commits already on branch)",
