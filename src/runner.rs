@@ -81,7 +81,7 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
         None
     };
 
-    let completed = run_iterations(LoopArgs {
+    let outcome = run_iterations(LoopArgs {
         agent: &*agent_impl,
         repo: &repo,
         run: &run,
@@ -97,28 +97,23 @@ pub async fn run_continuous(args: ContinuousArgs) -> Result<()> {
     .await?;
 
     bar.finish_and_clear();
-    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
-    {
-        if let Some(tracker) = pr_tracker.as_mut() {
-            finalize_run(
-                &*agent_impl,
-                &repo,
-                &branch,
-                &goal,
-                &base_branch,
-                tracker,
-                &sink,
-                cancel.cancelled.clone(),
-            )
-            .await;
-        } else {
-            sink.note("finalize requested — no PR open, exiting cleanly");
-        }
-    }
+    maybe_finalize(
+        &*agent_impl,
+        &repo,
+        &branch,
+        &goal,
+        &base_branch,
+        pr_tracker.as_mut(),
+        &sink,
+        &cancel,
+        outcome.exit_reason,
+    )
+    .await;
 
     sink.note(&format!(
         "done — {completed} commits on {branch} (run dir: {})",
-        run.run_dir.display()
+        run.run_dir.display(),
+        completed = outcome.completed,
     ));
     Ok(())
 }
@@ -195,7 +190,7 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
         None
     };
 
-    let completed = run_iterations(LoopArgs {
+    let outcome = run_iterations(LoopArgs {
         agent: &*agent_impl,
         repo: &repo,
         run: &new_run,
@@ -211,29 +206,24 @@ pub async fn resume_continuous(args: ResumeArgs) -> Result<()> {
     .await?;
 
     bar.finish_and_clear();
-    if cancel.finalize_requested.load(Ordering::SeqCst) && !cancel.cancelled.load(Ordering::SeqCst)
-    {
-        if let Some(tracker) = pr_tracker.as_mut() {
-            finalize_run(
-                &*agent_impl,
-                &repo,
-                &prev_meta.branch,
-                &prev_meta.goal,
-                &resume_base,
-                tracker,
-                &sink,
-                cancel.cancelled.clone(),
-            )
-            .await;
-        } else {
-            sink.note("finalize requested — no PR open, exiting cleanly");
-        }
-    }
+    maybe_finalize(
+        &*agent_impl,
+        &repo,
+        &prev_meta.branch,
+        &prev_meta.goal,
+        &resume_base,
+        pr_tracker.as_mut(),
+        &sink,
+        &cancel,
+        outcome.exit_reason,
+    )
+    .await;
 
     sink.note(&format!(
         "done — {completed} commits on {} (run dir: {})",
         prev_meta.branch,
-        new_run.run_dir.display()
+        new_run.run_dir.display(),
+        completed = outcome.completed,
     ));
     Ok(())
 }
@@ -332,19 +322,45 @@ impl<'a> PrTracker<'a> {
     }
 }
 
-async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
+/// Why `run_iterations` returned. The caller uses this to decide
+/// whether to auto-finalize the PR (natural stop / iterations
+/// exhausted) or leave it as draft (cancel / failure burst). The
+/// soft-Ctrl+C path stays a separate, explicit branch in the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitReason {
+    /// Agent reported `natural_stop: true` — the goal is done.
+    NaturalStop,
+    /// Loop ran the full `max_iterations` budget without an early break.
+    MaxIterations,
+    /// Soft Ctrl+C: user asked to wrap up after the in-flight iteration.
+    FinalizeRequested,
+    /// Hard cancel (second Ctrl+C, or cancel arrived mid-agent-failure).
+    Cancelled,
+    /// `consecutive_failures` reached `max_failures`.
+    TooManyFailures,
+}
+
+pub struct LoopOutcome {
+    pub completed: u32,
+    pub exit_reason: ExitReason,
+}
+
+async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<LoopOutcome> {
     let mut consecutive_failures = 0u32;
     let mut total_retries = 0u32;
     let mut completed = 0u32;
+    let mut exit_reason = ExitReason::MaxIterations;
 
     for iteration in 1..=args.max_iterations {
         if args.cancelled.load(Ordering::SeqCst) {
             args.sink.note("interrupted by user");
+            exit_reason = ExitReason::Cancelled;
             break;
         }
         if args.finalize_requested.load(Ordering::SeqCst) {
             args.sink
                 .note("finalize requested (Ctrl+C) — exiting iteration loop");
+            exit_reason = ExitReason::FinalizeRequested;
             break;
         }
         args.sink.note(&format!(
@@ -378,6 +394,7 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
                 if out.natural_stop {
                     args.sink
                         .note("agent reported natural_stop — exiting cleanly");
+                    exit_reason = ExitReason::NaturalStop;
                     break;
                 }
                 git::stage_all(args.repo)?;
@@ -422,6 +439,7 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
                     // User cancellation — leave the working tree
                     // alone and exit the loop, don't count it as a
                     // failure or burn a retry / backoff.
+                    exit_reason = ExitReason::Cancelled;
                     break;
                 }
                 consecutive_failures += 1;
@@ -432,6 +450,7 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
                     args.sink.note(&format!(
                         "giving up after {consecutive_failures} consecutive failures"
                     ));
+                    exit_reason = ExitReason::TooManyFailures;
                     break;
                 }
                 let backoff = std::time::Duration::from_secs(2u64.pow(consecutive_failures));
@@ -441,7 +460,64 @@ async fn run_iterations(mut args: LoopArgs<'_, '_>) -> Result<u32> {
     }
 
     let _ = args.branch;
-    Ok(completed)
+    Ok(LoopOutcome {
+        completed,
+        exit_reason,
+    })
+}
+
+/// Bridge between `run_iterations` and `finalize_run`: decide whether
+/// to mark the PR ready based on how the loop exited, and pass the
+/// matching `skip_confirm` so natural-completion runs don't pause for
+/// stdin.
+///
+/// Routing:
+/// - `NaturalStop` / `MaxIterations` → finalize automatically (no prompt).
+/// - `FinalizeRequested` (single Ctrl+C) → finalize, but ask first.
+/// - `Cancelled` (double Ctrl+C, hard cancel) → leave draft as-is.
+/// - `TooManyFailures` → leave draft as-is; the worktree is in a known-bad
+///   shape after `reset_hard`, manual review is safer than auto-ready.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_finalize(
+    agent: &dyn Agent,
+    repo: &Path,
+    branch: &str,
+    goal: &str,
+    base_branch: &str,
+    pr_tracker: Option<&mut PrTracker<'_>>,
+    sink: &LogSink,
+    cancel: &CancelState,
+    exit_reason: ExitReason,
+) {
+    if cancel.cancelled.load(Ordering::SeqCst) {
+        return;
+    }
+    let (should_finalize, skip_confirm) = match exit_reason {
+        ExitReason::NaturalStop | ExitReason::MaxIterations => (true, true),
+        ExitReason::FinalizeRequested => (true, false),
+        ExitReason::Cancelled | ExitReason::TooManyFailures => (false, false),
+    };
+    if !should_finalize {
+        return;
+    }
+    let Some(tracker) = pr_tracker else {
+        if exit_reason == ExitReason::FinalizeRequested {
+            sink.note("finalize requested — no PR open, exiting cleanly");
+        }
+        return;
+    };
+    finalize_run(
+        agent,
+        repo,
+        branch,
+        goal,
+        base_branch,
+        tracker,
+        sink,
+        cancel.cancelled.clone(),
+        skip_confirm,
+    )
+    .await;
 }
 
 /// Cap on the review-fix-check loop. High enough that the agent can
@@ -460,6 +536,7 @@ async fn finalize_run(
     tracker: &mut PrTracker<'_>,
     sink: &LogSink,
     cancelled: Arc<AtomicBool>,
+    skip_confirm: bool,
 ) {
     let url = match tracker.meta.pr_url.clone() {
         Some(url) => url,
@@ -468,7 +545,7 @@ async fn finalize_run(
             return;
         }
     };
-    if !confirm_finalize() {
+    if !skip_confirm && !confirm_finalize() {
         sink.note("finalize: declined; PR left in draft");
         return;
     }
@@ -1791,7 +1868,7 @@ esac
             oneshot_script: "true",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: Path::new("."),
             run: &run,
@@ -1807,7 +1884,7 @@ esac
         .await
         .unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert!(run.prompts_dir.join("iter-0001.md").exists());
         assert!(!run.prompts_dir.join("iter-0002.md").exists());
     }
@@ -1820,7 +1897,7 @@ esac
             oneshot_script: "true",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: Path::new("."),
             run: &run,
@@ -1836,7 +1913,7 @@ esac
         .await
         .unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert!(!run.prompts_dir.join("iter-0001.md").exists());
     }
 
@@ -1848,7 +1925,7 @@ esac
             oneshot_script: "true",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: Path::new("."),
             run: &run,
@@ -1864,7 +1941,7 @@ esac
         .await
         .unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert!(!run.prompts_dir.join("iter-0001.md").exists());
     }
 
@@ -1877,7 +1954,7 @@ esac
             oneshot_script: "printf 'increase coverage\n'",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -1899,7 +1976,7 @@ esac
             .output()
             .unwrap();
 
-        assert_eq!(completed, 1);
+        assert_eq!(outcome.completed, 1);
         assert!(repo.join("generated.txt").exists());
         assert_eq!(
             String::from_utf8(commit_subject.stdout).unwrap().trim(),
@@ -1918,7 +1995,7 @@ esac
             oneshot_script: "printf 'test(runner): keep commit without notes\n'",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -1939,7 +2016,7 @@ esac
             .output()
             .unwrap();
 
-        assert_eq!(completed, 1);
+        assert_eq!(outcome.completed, 1);
         assert_eq!(
             String::from_utf8(commit_subject.stdout).unwrap().trim(),
             "test(runner): keep commit without notes"
@@ -1960,7 +2037,7 @@ esac
             oneshot_script: "exit 99",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -1982,7 +2059,7 @@ esac
             .output()
             .unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert_eq!(String::from_utf8(commit_count.stdout).unwrap().trim(), "1");
         assert!(run.prompts_dir.join("iter-0001.md").exists());
         assert!(run.prompts_dir.join("iter-0002.md").exists());
@@ -1998,7 +2075,7 @@ esac
             oneshot_script: "true",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -2014,7 +2091,7 @@ esac
         .await
         .unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert_eq!(
             fs::read_to_string(repo.join("README.md")).unwrap(),
             "start\n"
@@ -2032,7 +2109,7 @@ esac
             oneshot_script: "printf 'test(runner): commit after retry\n'",
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -2053,7 +2130,7 @@ esac
             .output()
             .unwrap();
 
-        assert_eq!(completed, 1);
+        assert_eq!(outcome.completed, 1);
         assert_eq!(
             fs::read_to_string(repo.join("README.md")).unwrap(),
             "start\n"
@@ -2083,7 +2160,7 @@ esac
             })
         };
 
-        let completed = run_iterations(LoopArgs {
+        let outcome = run_iterations(LoopArgs {
             agent: &agent,
             repo: &repo,
             run: &run,
@@ -2100,7 +2177,7 @@ esac
         .unwrap();
         cancel_task.await.unwrap();
 
-        assert_eq!(completed, 0);
+        assert_eq!(outcome.completed, 0);
         assert_eq!(
             fs::read_to_string(repo.join("README.md")).unwrap(),
             "changed\n"
@@ -2325,6 +2402,7 @@ esac
             &mut tracker,
             &sink,
             flag(false),
+            false,
         )
         .await;
 
@@ -2350,11 +2428,178 @@ esac
             &mut tracker,
             &sink,
             flag(false),
+            false,
         )
         .await;
 
         let log = fs::read_to_string(&run.log_file).unwrap();
         assert!(log.contains("finalize: declined; PR left in draft"));
+    }
+
+    #[tokio::test]
+    async fn finalize_run_skips_confirm_when_flag_is_set() {
+        let (_dir, run, sink) = temp_run("finalize-skip-confirm");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        finalize_run(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            &mut tracker,
+            &sink,
+            flag(false),
+            true,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!log.contains("finalize: declined; PR left in draft"));
+        assert!(log.contains("finalize: git diff failed"));
+    }
+
+    fn cancel_state(finalize: bool, cancelled: bool) -> CancelState {
+        CancelState {
+            finalize_requested: flag(finalize),
+            cancelled: flag(cancelled),
+        }
+    }
+
+    #[tokio::test]
+    async fn maybe_finalize_is_noop_when_cancelled() {
+        let (_dir, run, sink) = temp_run("maybe-finalize-cancelled");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        maybe_finalize(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            Some(&mut tracker),
+            &sink,
+            &cancel_state(false, true),
+            ExitReason::Cancelled,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!log.contains("finalize:"));
+    }
+
+    #[tokio::test]
+    async fn maybe_finalize_is_noop_after_too_many_failures() {
+        let (_dir, run, sink) = temp_run("maybe-finalize-failures");
+        let mut tracker = tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        maybe_finalize(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            Some(&mut tracker),
+            &sink,
+            &cancel_state(false, false),
+            ExitReason::TooManyFailures,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!log.contains("finalize:"));
+    }
+
+    #[tokio::test]
+    async fn maybe_finalize_runs_finalize_on_max_iterations() {
+        let (_dir, run, sink) = temp_run("maybe-finalize-max-iters");
+        let mut tracker = draft_tracker_for(&run);
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        maybe_finalize(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            Some(&mut tracker),
+            &sink,
+            &cancel_state(false, false),
+            ExitReason::MaxIterations,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        // draft_tracker_for has no pr_url, so finalize_run reaches the
+        // PR-URL check and bails — proving we got into finalize_run
+        // without being blocked by a stdin confirm prompt.
+        assert!(log.contains("finalize: no PR URL recorded; skipping"));
+        assert!(!log.contains("finalize: declined"));
+    }
+
+    #[tokio::test]
+    async fn maybe_finalize_notes_no_pr_open_when_finalize_requested_without_tracker() {
+        let (_dir, run, sink) = temp_run("maybe-finalize-no-tracker-soft");
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        maybe_finalize(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            None,
+            &sink,
+            &cancel_state(true, false),
+            ExitReason::FinalizeRequested,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(log.contains("finalize requested — no PR open, exiting cleanly"));
+    }
+
+    #[tokio::test]
+    async fn maybe_finalize_silent_on_max_iterations_without_tracker() {
+        let (_dir, run, sink) = temp_run("maybe-finalize-no-tracker-natural");
+        let agent = StreamingFakeAgent {
+            script: "exit 99",
+            oneshot_script: "exit 99",
+        };
+
+        maybe_finalize(
+            &agent,
+            &run.run_dir.join("missing-repo"),
+            "feature/test",
+            "increase coverage",
+            "main",
+            None,
+            &sink,
+            &cancel_state(false, false),
+            ExitReason::MaxIterations,
+        )
+        .await;
+
+        let log = fs::read_to_string(&run.log_file).unwrap();
+        assert!(!log.contains("finalize"));
     }
 
     #[test]
