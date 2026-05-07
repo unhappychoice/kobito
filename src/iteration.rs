@@ -122,7 +122,8 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                 Ok(out) => {
                     consecutive_failures = 0;
                     git::stage_all(&repo)?;
-                    if git::has_staged_changes(&repo)? {
+                    let produced_diff = git::has_staged_changes(&repo)?;
+                    if produced_diff {
                         let diff = git::diff_staged(&repo)?;
                         let style = git::recent_commit_messages(&repo, 20).unwrap_or_default();
                         let msg =
@@ -159,6 +160,31 @@ pub async fn run(args: IterationArgs) -> Result<()> {
                     if out.task_complete {
                         sink.note("agent reported task_complete");
                         completed = true;
+                        break;
+                    }
+                    if !produced_diff {
+                        // Per the prompt contract, every iteration must
+                        // either produce a focused change or set
+                        // task_complete=true. When the agent does
+                        // neither, looping more burns budget on a stalled
+                        // run (the failure mode that previously chewed
+                        // through 20+ iterations before timing out). If
+                        // earlier iterations already committed real
+                        // work, treat the task as complete so the PR can
+                        // be opened; otherwise the agent has stalled
+                        // before producing anything.
+                        let prior_commits =
+                            git::has_commits_ahead_of(&repo, &starting_branch).unwrap_or(false);
+                        if prior_commits {
+                            sink.note(
+                                "no progress this iteration; treating task as complete (commits already on branch)",
+                            );
+                            completed = true;
+                        } else {
+                            sink.note(
+                                "no progress and no commits on this branch; giving up on this task",
+                            );
+                        }
                         break;
                     }
                 }
@@ -657,6 +683,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_bails_after_first_no_diff_iteration_when_branch_has_no_commits() {
+        // Regression for the iter loop chewing through every iteration
+        // when the agent ignores the prompt contract and keeps
+        // returning task_complete=false without producing any diff.
+        // The orchestrator must bail out after one empty iteration so
+        // the budget isn't wasted (see issue: agent loops until
+        // max_iterations).
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("stall-no-commits");
+        let repo = dir.0.join("repo");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Stall without progress\n").unwrap();
+        write_fake_codex(&bin);
+        init_repo(&repo);
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: None,
+            vars: vec![],
+            max_iterations: 5,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state::tasks_path(&project)).unwrap(),
+            "- [ ] Stall without progress\n",
+            "task should remain pending when the agent never produced anything",
+        );
+        assert_iteration_count(&project, 1);
+        let log = run_log(&project);
+        assert!(
+            log.contains("no progress and no commits"),
+            "log should mention the stall reason: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_completes_task_when_iteration_produces_no_diff_after_prior_commit() {
+        // When earlier iterations already committed real work and a
+        // later iteration produces no diff (the common
+        // "task-already-done-but-agent-keeps-running" pattern), the
+        // orchestrator should treat the task as complete and open the
+        // PR rather than burning the rest of the budget.
+        let _guard = ENV_LOCK.lock().await;
+        let old_dir = std::env::current_dir().unwrap();
+        let old_path = std::env::var_os("PATH");
+        let old_xdg = std::env::var_os("XDG_STATE_HOME");
+        let dir = unique_tmp("stall-after-commit");
+        let repo = dir.0.join("repo");
+        let remote = dir.0.join("origin.git");
+        let state_home = dir.0.join("state");
+        let backlog = dir.0.join("tasks.md");
+        let bin = dir.0.join("bin");
+
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&backlog, "- [ ] Land then stall\n").unwrap();
+        write_progress_then_stall_fake_codex(&bin);
+        write_fake_gh(&bin);
+        init_repo(&repo);
+        std::fs::write(repo.join(".git").join("kobito-test-gh-success"), "").unwrap();
+        init_bare_remote(&remote);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+
+        set_env("XDG_STATE_HOME", Some(state_home.as_os_str()));
+        set_env(
+            "PATH",
+            Some(prefixed_path(&bin, old_path.as_deref()).as_os_str()),
+        );
+        std::env::set_current_dir(&repo).unwrap();
+
+        let result = run(IterationArgs {
+            backlog: Some(backlog),
+            preset: None,
+            vars: vec![],
+            max_iterations: 8,
+            max_failures: 1,
+            agent: "codex".into(),
+            allow_dirty: false,
+        })
+        .await;
+        let project = single_project_under(&state_home);
+
+        std::env::set_current_dir(old_dir).unwrap();
+        set_env("PATH", old_path.as_deref());
+        set_env("XDG_STATE_HOME", old_xdg.as_deref());
+
+        result.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state::tasks_path(&project)).unwrap(),
+            "- [x] Land then stall\n",
+        );
+        assert_branch_exists(&repo, "feature/progress-then-stall-task-1");
+        assert_iteration_count(&project, 2);
+        let log = run_log(&project);
+        assert!(
+            log.contains("treating task as complete"),
+            "log should mention complete-via-stall: {log}"
+        );
+    }
+
+    #[tokio::test]
     async fn run_leaves_completed_task_open_when_pr_creation_fails() {
         let _guard = ENV_LOCK.lock().await;
         let old_dir = std::env::current_dir().unwrap();
@@ -778,6 +931,47 @@ case " $* " in
     ;;
 esac
 "#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn write_progress_then_stall_fake_codex(bin: &Path) {
+        // First call appends to README so kobito sees a diff and
+        // commits. Subsequent calls leave the tree untouched, modeling
+        // the agent stalling after landing real work — the situation
+        // the orchestrator must detect to short-circuit the loop.
+        let script = bin.join("codex");
+        let marker = bin.join(".kobito-iter-1-done");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+case " $* " in
+  *" --json "*)
+    if [ ! -f __MARKER__ ]; then
+      printf 'first iter work\n' >> README.md
+      : > __MARKER__
+    fi
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"task_complete\":false}"}}'
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":5,"cached_input_tokens":6}}'
+    ;;
+  *"Suggest a single git branch name"*)
+    printf '%s\n' 'feature/progress-then-stall'
+    ;;
+  *"Generate a single commit message"*)
+    printf '%s\n' 'test(iteration): partial work'
+    ;;
+  *)
+    printf '%s\n' 'NO_NOTES'
+    ;;
+esac
+"#
+            .replace("__MARKER__", marker.to_str().unwrap()),
         )
         .unwrap();
         #[cfg(unix)]
@@ -936,6 +1130,31 @@ esac
             id,
             root: project_root,
         }
+    }
+
+    fn assert_iteration_count(project: &state::ProjectPaths, expected: usize) {
+        let runs_dir = project.root.join("runs");
+        let prompts_dir = std::fs::read_dir(&runs_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("prompts"))
+            .find(|path| path.exists())
+            .expect("expected a run with a prompts/ directory");
+        let count = std::fs::read_dir(&prompts_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|n| n.starts_with("iter-") && n.ends_with(".md"))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            count, expected,
+            "expected exactly {expected} iteration prompt(s) in {prompts_dir:?}",
+        );
     }
 
     fn assert_saved_prompt_mentions_task(project: &state::ProjectPaths, task: &str) {
