@@ -1,6 +1,6 @@
 [package]
 name = "kobito"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Autonomous coding agent orchestrator — works while you sleep, like the elves in the shoemaker's tale"
 license = "ISC"

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-05-07
+
+### 🐛 Bug Fixes
+
+- fix(iter): bail out when an iteration produces no diff ([5501735](https://github.com/unhappychoice/kobito/commit/5501735))
+
+### 📝 Other Changes
+
+- chore: bump version to v0.3.2 ([c2eb160](https://github.com/unhappychoice/kobito/commit/c2eb160))
+- style: cargo fmt ([758dd39](https://github.com/unhappychoice/kobito/commit/758dd39))
+
+
 ## [0.3.1] - 2026-05-07
 
 ### ✨ Features
@@ -17,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📝 Other Changes
 
-- chore: bump version to v0.3.1 ([b6e1e64](https://github.com/unhappychoice/kobito/commit/b6e1e64))
+- chore: bump version to v0.3.1 ([7032b57](https://github.com/unhappychoice/kobito/commit/7032b57))
 
 
 ## [0.3.0] - 2026-05-07
