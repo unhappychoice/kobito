@@ -52,8 +52,8 @@ jobs:
 
       - name: Create temporary tag
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "unhappychoice@gmail.com"
+          git config --local user.name "Yuji Ueki"
           git add Cargo.toml Cargo.lock
           git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }}"
           git tag ${{ steps.version.outputs.new_version }}
@@ -227,8 +227,8 @@ jobs:
           FOURTH_SHA_LINE=$(grep -n 'sha256 "' Formula/kobito.rb | head -4 | tail -1 | cut -d: -f1)
           sed -i "${FOURTH_SHA_LINE}s/sha256 \"[a-f0-9]\+\"/sha256 \"$LINUX_ARM_SHA\"/" Formula/kobito.rb
 
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.email "unhappychoice@gmail.com"
+          git config --local user.name "Yuji Ueki"
           git add Formula/kobito.rb
           git commit -m "chore: update kobito to $VERSION"
           git push
