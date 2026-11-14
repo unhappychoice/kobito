@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-11-14
+
+### 📝 Other Changes
+
+- chore: bump version to v0.3.3 ([0a0b2d5](https://github.com/unhappychoice/kobito/commit/0a0b2d5))
+- chore(deps): bump tokio from 1.53.3 to 1.54.1 ([2101ffa](https://github.com/unhappychoice/kobito/commit/2101ffa))
+- chore(deps): bump tokio from 1.53.2 to 1.53.3 ([c117a85](https://github.com/unhappychoice/kobito/commit/c117a85))
+- chore(deps): bump serde_json from 1.0.151 to 1.0.154 ([1e741b3](https://github.com/unhappychoice/kobito/commit/1e741b3))
+- chore(deps): bump tokio from 1.53.1 to 1.53.2 ([b45ccb6](https://github.com/unhappychoice/kobito/commit/b45ccb6))
+- chore(deps): bump clap from 4.6.6 to 4.6.7 ([ac77220](https://github.com/unhappychoice/kobito/commit/ac77220))
+- chore(deps): bump console from 0.16.4 to 0.16.6 ([4b693ac](https://github.com/unhappychoice/kobito/commit/4b693ac))
+- chore(deps): bump dirs from 6.0.0 to 7.0.0 ([7ad8407](https://github.com/unhappychoice/kobito/commit/7ad8407))
+- chore(deps): bump clap from 4.6.5 to 4.6.6 ([161a5c5](https://github.com/unhappychoice/kobito/commit/161a5c5))
+- chore(ci): use personal git identity for automated commits ([c7109d0](https://github.com/unhappychoice/kobito/commit/c7109d0))
+- chore(deps): bump clap from 4.6.4 to 4.6.5 ([204b7a8](https://github.com/unhappychoice/kobito/commit/204b7a8))
+- chore(deps): bump serde_json from 1.0.150 to 1.0.151 ([72f913c](https://github.com/unhappychoice/kobito/commit/72f913c))
+- chore(deps): bump anyhow from 1.0.103 to 1.0.104 ([4dfd6cc](https://github.com/unhappychoice/kobito/commit/4dfd6cc))
+- chore(deps): bump tokio from 1.52.4 to 1.53.1 ([f46c958](https://github.com/unhappychoice/kobito/commit/f46c958))
+- chore(deps): bump clap from 4.6.2 to 4.6.4 ([4d1898c](https://github.com/unhappychoice/kobito/commit/4d1898c))
+- chore(deps): bump serde from 1.0.228 to 1.0.229 ([f4b62b4](https://github.com/unhappychoice/kobito/commit/f4b62b4))
+- chore(deps): bump clap from 4.6.1 to 4.6.2 ([1e66917](https://github.com/unhappychoice/kobito/commit/1e66917))
+- chore(deps): bump tokio from 1.52.3 to 1.52.4 ([3b407b0](https://github.com/unhappychoice/kobito/commit/3b407b0))
+- chore(deps): bump regex from 1.13.0 to 1.13.1 ([d9dcd93](https://github.com/unhappychoice/kobito/commit/d9dcd93))
+- chore(deps): bump console from 0.15.11 to 0.16.4 ([051601d](https://github.com/unhappychoice/kobito/commit/051601d))
+- chore(deps): bump regex from 1.12.4 to 1.13.0 ([0ea6417](https://github.com/unhappychoice/kobito/commit/0ea6417))
+- chore(deps): bump indicatif from 0.18.4 to 0.18.6 ([8336fbd](https://github.com/unhappychoice/kobito/commit/8336fbd))
+- chore(deps): bump anyhow from 1.0.102 to 1.0.103 ([f170f69](https://github.com/unhappychoice/kobito/commit/f170f69))
+- chore(deps): bump actions/checkout from 4 to 7 ([7e9b0ef](https://github.com/unhappychoice/kobito/commit/7e9b0ef))
+- chore(deps): bump regex from 1.12.3 to 1.12.4 ([daf04ea](https://github.com/unhappychoice/kobito/commit/daf04ea))
+- chore(deps): bump chrono from 0.4.44 to 0.4.45 ([4b860e1](https://github.com/unhappychoice/kobito/commit/4b860e1))
+- chore(deps): bump serde_json from 1.0.149 to 1.0.150 ([6dd3eb1](https://github.com/unhappychoice/kobito/commit/6dd3eb1))
+- chore(deps): bump tokio from 1.52.1 to 1.52.3 ([c82d20f](https://github.com/unhappychoice/kobito/commit/c82d20f))
+- chore: add CODEOWNERS for review request automation ([9b11d2d](https://github.com/unhappychoice/kobito/commit/9b11d2d))
+- chore(deps): bump softprops/action-gh-release from 2 to 3 ([c47684d](https://github.com/unhappychoice/kobito/commit/c47684d))
+
+
 ## [0.3.2] - 2026-05-07
 
 ### 🐛 Bug Fixes
@@ -13,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📝 Other Changes
 
-- chore: bump version to v0.3.2 ([c2eb160](https://github.com/unhappychoice/kobito/commit/c2eb160))
+- chore: bump version to v0.3.2 ([3d16e31](https://github.com/unhappychoice/kobito/commit/3d16e31))
 - style: cargo fmt ([758dd39](https://github.com/unhappychoice/kobito/commit/758dd39))
 
 
